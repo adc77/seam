@@ -1,0 +1,108 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    name: suite on ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.13 is the floor seam claims in pyproject and the oldest CI runner.
+        # 3.14 is what the library is developed against.
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Show the interpreter
+        run: python -VV
+
+      # Stdlib only, so there is nothing to install. The suite itself puts the
+      # repository on PYTHONPATH; no editable install, no lockfile.
+      - name: Run the suite
+        run: python -m unittest discover -s tests -t . -v
+
+      - name: The proof still runs from a clean checkout
+        run: |
+          case=seam/proof/checkout/cases/declined.json
+          SEAM_SIM=1 \
+          SEAM_NAMESPACE=sim-checkout-declined \
+          SEAM_CASE=$case \
+          SEAM_ARTIFACT="$RUNNER_TEMP/declined.json" \
+          python -m seam.proof.checkout
+          test -s "$RUNNER_TEMP/declined.json"
+          python - "$RUNNER_TEMP/declined.json" <<'PY'
+          import json, sys
+          art = json.load(open(sys.argv[1]))
+          assert art["status"] == "passed", art
+          assert art["digest"] == "40e9b490276e08ebf25d4865628e8902521b65e83bfb1ab11139c64a8e6146bd", art["digest"]
+          print("proof ok:", art["digest"])
+          PY
+
+      - name: The package builds and imports
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir "$RUNNER_TEMP/dist"
+          python -m pip install --force-reinstall "$RUNNER_TEMP"/dist/*.whl
+          python -c "import seam; print('installed seam', seam.__version__)"
+          python -c "import seam.proof.checkout as p; print('proof packaged', p.__name__)"
+          python -c "import pathlib, seam; d=pathlib.Path(seam.__file__).parent; print([p.name for p in (d/'proof'/'checkout'/'cases').iterdir()])"
+
+  guard:
+    name: guard closes on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # The suite asserts these codes, but a passing suite on a platform where
+      # an audit event does not fire would be a false green. This asserts the
+      # events seam depends on actually exist here.
+      - name: The audit events the guard relies on are present
+        run: |
+          python - <<'PY'
+          seen = set()
+          import sys
+          def hook(event, args):
+              seen.add(event)
+          sys.addaudithook(hook)
+          import ctypes, os, socket, subprocess, tempfile
+          d = tempfile.mkdtemp()
+          p = os.path.join(d, "f")
+          open(p, "w").close()
+          open(p, encoding="ascii").read()
+          fd = os.open(p, os.O_RDONLY); os.close(fd)
+          os.listdir(d)
+          # os.scandir raises its audit event when the iterator is consumed,
+          # not when it is created, so it has to be walked here.
+          [entry.name for entry in os.scandir(d)]
+          try:
+              ctypes.CDLL(None)
+          except Exception:
+              pass
+          try:
+              subprocess.run(["/bin/echo", "x"], capture_output=True)
+          except Exception:
+              pass
+          required = ["open", "os.listdir", "os.scandir", "ctypes.dlopen", "subprocess.Popen"]
+          missing = [event for event in required if event not in seen]
+          print("observed:", sorted(seen & set(required)))
+          if missing:
+              raise SystemExit("platform is missing audit events seam needs: " + ", ".join(missing))
+          print("all required audit events fire on this platform")
+          PY
