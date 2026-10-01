@@ -337,6 +337,8 @@ run(rt, case):
 
 Events at exactly `deadline_ns` run. Events after it do not, and their bodies are not read. "After the deadline" means the scheduler stopped looking. It does not mean the event is deleted from the case file on disk.
 
+The empty-queue check and the deadline check happen before the `max_events` check. A run that delivers exactly `max_events` and then has nothing left stops cleanly. `max_events` faults when another delivery would start. `max_port_calls` is checked on `emit`, before the call that would exceed it, and that call is not logged. An unmatched call, a tape mismatch, and a tape exhaustion are logged with a null response and then fault.
+
 Re-entry is forbidden. `deliver` from inside a handler raises, and that is a fault `reentrant`. Port scripts are tables of data. They cannot deliver, schedule, or emit.
 
 A handler exception commits the `set_state` calls that already happened. v1 has no transaction and no rollback. The deliver event is logged with `status: "error"`.

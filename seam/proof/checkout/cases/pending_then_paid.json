@@ -1,0 +1,36 @@
+{
+  "format": "seam-case",
+  "version": 1,
+  "name": "pending-then-paid",
+  "seed": 1842,
+  "namespace": "sim-checkout-pending",
+  "clock": {"start_ns": 0, "epoch": "1970-01-01T00:00:00Z"},
+  "initial_state": {},
+  "arrivals": [
+    {"at_ns": 0, "handler": "message", "body": {"sku": "book", "amount": 500}},
+    {"at_ns": 1000000000, "handler": "message", "body": {"sku": "book", "amount": 500, "settle": true}}
+  ],
+  "ports": {
+    "payments": {
+      "mode": "script",
+      "replies": [
+        {"match": {"amount": 500}, "response": {"status": "pending"}, "repeat": 1},
+        {"match": {"amount": 500}, "response": {"status": "paid"}, "repeat": 1}
+      ]
+    },
+    "email": {
+      "mode": "script",
+      "replies": [
+        {"match": {"$any": true}, "response": {"status": "accepted"}, "repeat": 1}
+      ]
+    }
+  },
+  "stop": {"when": "quiescence"},
+  "assertions": [
+    {"op": "port_not_called", "port": "email"},
+    {"op": "port_called", "port": "payments", "times": 2},
+    {"op": "timer_outcome", "name": "remind-once", "outcome": "cancelled"},
+    {"op": "state_is", "path": "order.status", "value": "paid"},
+    {"op": "stopped", "reason": "quiescence"}
+  ]
+}

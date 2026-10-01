@@ -1,0 +1,56 @@
+{
+  "format": "seam-case",
+  "version": 1,
+  "name": "checkout-declined",
+  "seed": 1842,
+  "namespace": "sim-checkout-declined",
+  "clock": {
+    "start_ns": 0,
+    "epoch": "1970-01-01T00:00:00Z"
+  },
+  "initial_state": {},
+  "arrivals": [
+    {
+      "at_ns": 0,
+      "handler": "message",
+      "body": {"sku": "book", "amount": 500}
+    }
+  ],
+  "ports": {
+    "payments": {
+      "mode": "script",
+      "unmatched": "fail",
+      "replies": [
+        {
+          "match": {"amount": 500},
+          "response": {"status": "declined"},
+          "repeat": 1
+        }
+      ]
+    },
+    "email": {
+      "mode": "script",
+      "unmatched": "fail",
+      "replies": [
+        {
+          "match": {"$any": true},
+          "response": {"status": "accepted"},
+          "repeat": 1
+        }
+      ]
+    }
+  },
+  "stop": {
+    "when": "quiescence",
+    "allow_quiescence": false,
+    "max_events": 1000,
+    "max_port_calls": 100
+  },
+  "assertions": [
+    {"op": "port_called", "port": "payments", "times": 1},
+    {"op": "port_not_called", "port": "email"},
+    {"op": "state_is", "path": "order.status", "value": "declined"},
+    {"op": "stopped", "reason": "quiescence"}
+  ],
+  "log_state": "on_change"
+}
