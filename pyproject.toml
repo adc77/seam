@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seam"
+version = "0.1.0"
+description = "A simulation boundary for a product. Inert in production. Seeded in a separate run."
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "License not yet chosen" }
+
+[tool.setuptools.packages.find]
+include = ["seam*"]
+
+[tool.setuptools.package-data]
+seam = ["proof/checkout/cases/*.json"]
