@@ -10,7 +10,7 @@ from seam.clock import format_utc
 from seam.ctx import Ctx, assert_int, replace_at
 from seam.errors import Fault, NoTimerBackend, Refuse
 from seam.grade import exit_code, finish
-from seam.guard import install_guards
+from seam.guard import install_guards, trusted
 from seam.loop import run_sim
 
 _CONSUMED = False
@@ -251,7 +251,9 @@ def _artifact_path():
 
 
 def _emit(path, obj):
-    write_artifact(path, obj)
+    # The artifact write is seam's own I/O, not a handler's, so it runs trusted.
+    with trusted():
+        write_artifact(path, obj)
     print(os.path.abspath(path), flush=True)
 
 
@@ -290,7 +292,8 @@ def main(rt):
         _emit(path, refused(err.code, meta=err.meta, op=err.op))
         return 3
     _CONSUMED = True
-    install_guards()
+    # The artifact is the one path seam itself writes, so it is allowlisted here.
+    install_guards(write_paths=(path, path + ".tmp"))
     result = run_sim(rt, case)
     _emit(path, finish(result, case))
     return exit_code(result)

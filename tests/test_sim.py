@@ -277,13 +277,17 @@ class ProcessTest(unittest.TestCase):
             script = (
                 "import os, sys\n"
                 "from seam import Refuse, main\n"
+                "from seam.guard import trusted\n"
                 "from seam.proof.checkout import build\n"
                 "os.environ['SEAM_ARTIFACT'] = os.environ['ART1']\n"
                 "c1 = main(build())\n"
-                "before = open(os.environ['ART1'], 'rb').read()\n"
+                # Reading the artifact is the test's own I/O, not a handler's.\n"
+                "with trusted():\n"
+                "    before = open(os.environ['ART1'], 'rb').read()\n"
                 "os.environ['SEAM_ARTIFACT'] = os.environ['ART2']\n"
                 "c2 = main(build())\n"
-                "after = open(os.environ['ART1'], 'rb').read()\n"
+                "with trusted():\n"
+                "    after = open(os.environ['ART1'], 'rb').read()\n"
                 "assert before == after\n"
                 "sys.stdout.write('CODES %s %s\\n' % (c1, c2))\n"
             )
@@ -330,10 +334,11 @@ class ProcessTest(unittest.TestCase):
     def test_datetime_import_and_normal_file_under_guards(self):
         with tempfile.TemporaryDirectory() as directory:
             target = os.path.join(directory, "note.txt")
+            allowed = os.path.join(directory, "allowed.json")
             script = (
                 "import os, sys\n"
-                "from seam.guard import install_guards\n"
-                "install_guards()\n"
+                "from seam.guard import allow_read, allow_write, install_guards, trusted\n"
+                "install_guards(write_paths=[os.environ['NOTE']], read_paths=[os.environ['NOTE']])\n"
                 "install_guards()\n"
                 "from datetime import datetime\n"
                 "try:\n"
@@ -341,16 +346,43 @@ class ProcessTest(unittest.TestCase):
                 "    sys.stdout.write('datetime MISS\\n')\n"
                 "except Exception as err:\n"
                 "    sys.stdout.write('datetime %s %s\\n' % (err.code, err.op))\n"
+                # A lazy import reads a module file. That must not fault.
+                "import json\n"
+                "sys.stdout.write('import json %s\\n' % json.dumps({'a': 1}))\n"
                 "path = os.environ['NOTE']\n"
                 "handle = open(path, 'w', encoding='ascii')\n"
                 "handle.write('ok')\n"
                 "handle.close()\n"
                 "sys.stdout.write('file %s\\n' % open(path, encoding='ascii').read())\n"
+                # An allowlisted path still faults when it is not allowlisted.\n"
+                "try:\n"
+                "    open(os.environ['DENIED'], 'w')\n"
+                "    sys.stdout.write('denied MISS\\n')\n"
+                "except Exception as err:\n"
+                "    sys.stdout.write('denied %s %s\\n' % (err.code, err.op))\n"
+                "try:\n"
+                "    open(os.environ['DENIED'], encoding='ascii').read()\n"
+                "    sys.stdout.write('deniedread MISS\\n')\n"
+                "except Exception as err:\n"
+                "    sys.stdout.write('deniedread %s %s\\n' % (err.code, err.op))\n"
+                # Seam's own I/O is exempt.\n"
+                "with trusted():\n"
+                "    with open(os.environ['ALLOWED'], 'w', encoding='ascii') as h:\n"
+                "        h.write('seam')\n"
+                "    sys.stdout.write('trusted %s\\n' % open(os.environ['ALLOWED']).read())\n"
             )
-            proc = run_script(script, child_env(NOTE=target), timeout=5)
+            proc = run_script(
+                script,
+                child_env(NOTE=target, DENIED=allowed, ALLOWED=os.path.join(directory, "own.txt")),
+                timeout=5,
+            )
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("datetime real_clock datetime.now", proc.stdout)
+            self.assertIn('import json {"a": 1}', proc.stdout)
             self.assertIn("file ok", proc.stdout)
+            self.assertIn("denied file_write file.write", proc.stdout)
+            self.assertIn("deniedread file_read file.read", proc.stdout)
+            self.assertIn("trusted seam", proc.stdout)
             self.assertNotIn("MISS", proc.stdout)
 
     def test_live_module_does_not_simulate(self):

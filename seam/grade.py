@@ -6,6 +6,7 @@ from copy import deepcopy
 from seam.artifact import assemble, digest_body
 from seam.canon import digest, equal, matches
 from seam.errors import Fault
+from seam.guard import trusted
 
 
 def _port_calls(art, port):
@@ -118,7 +119,10 @@ def check_all(art, assertions):
 
 def _load_grader(spec):
     module_name, func_name = spec.split(":")
-    module = importlib.import_module(module_name)
+    # Importing the grader reads its module file. That is seam's own work, not
+    # a handler's, so it runs trusted. The grader body itself does not.
+    with trusted():
+        module = importlib.import_module(module_name)
     fn = getattr(module, func_name)
     if not callable(fn):
         raise Fault("grader_error")
@@ -137,6 +141,12 @@ def _failed(result):
 
 def finish(result, case):
     """Seal the digest, then run every assertion, then the grader."""
+    # Filesystem provenance is recorded outside the digest on purpose: it is a
+    # fact about the host, not an input to the run. A run that read nothing
+    # leaves the key out entirely so artifacts stay byte-comparable.
+    from seam.guard import POLICY
+
+    result.fs_reads = POLICY.seen_reads()
     result.digest = digest(digest_body(result))
     result.assertions = check_all(assemble(result), case.assertions)
     result.status = "failed" if _failed(result) else "passed"

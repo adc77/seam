@@ -32,6 +32,7 @@ class Result:
     assertions: list | None = None
     grader_failures: list | None = None
     post_fault: Fault | None = None
+    fs_reads: list | None = None
 
 
 class Engine:

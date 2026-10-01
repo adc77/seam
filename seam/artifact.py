@@ -57,6 +57,8 @@ def assemble(result):
         art["assertions"] = result.assertions
     if result.grader_failures is not None:
         art["grader"] = result.grader_failures
+    if result.fs_reads:
+        art["fs_reads"] = result.fs_reads
     return art
 
 
