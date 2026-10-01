@@ -61,7 +61,13 @@ _READ_EVENTS = {
     "os.listdir": "os.listdir",
     "os.scandir": "os.scandir",
 }
-# `open` and `os.open` both fire `open`. These are the modes that can change a file.
+#: The real `os.stat`, kept before `install_guards` patches it so seam's own path
+#: resolution can still work. `os.path.realpath` needs a real stat result for
+#: every path component, so the guarded version cannot simply return None.
+_REAL_STAT = os.stat
+_REAL_LSTAT = os.lstat
+
+#: `open` and `os.open` both fire `open`. These are the modes that can change a file.
 _WRITE_MODES = frozenset("wax+")
 _DEVICE_RANDOM = ("/dev/urandom", "/dev/random")
 _CTYPES_EVENTS = frozenset({"ctypes.dlopen", "ctypes.dlsym", "ctypes.call_function"})
@@ -98,13 +104,23 @@ def _interpreter_dirs():
 
 
 class Policy:
-    """The paths a handler may touch, and the reads it did touch."""
+    """The paths a handler may touch, and the reads it did touch.
+
+    `extra_reads` and `extra_writes` hold paths registered by a product through
+    `allow_read` and `allow_write` before the run starts. They survive
+    `reset`, because installing the guards must not silently discard a
+    registration the product made while building its runtime.
+    """
 
     def __init__(self):
         self.write_paths = set()
         self.read_paths = set()
         self.reads = set()
-        self.interpreter_paths = set()
+        # Resolved at construction, not in reset, so `is_interpreter` is correct
+        # before the guards are installed and does not depend on call order.
+        self.interpreter_paths = _interpreter_dirs()
+        self.extra_reads = set()
+        self.extra_writes = set()
         self.armed = False
         self._resolving = False
 
@@ -112,6 +128,8 @@ class Policy:
         self._resolving = False
         self.write_paths = set()
         self.read_paths = set()
+        # Re-resolved on reset so a process that changes sys.path mid-life
+        # (a test harness, an embedded interpreter) still classifies correctly.
         self.interpreter_paths = _interpreter_dirs()
         for path in write_paths:
             normalized = _norm(path)
@@ -121,6 +139,8 @@ class Policy:
             normalized = _norm(path)
             if normalized is not None:
                 self.read_paths.add(normalized)
+        self.write_paths |= self.extra_writes
+        self.read_paths |= self.extra_reads
         self.reads = set()
         self.armed = True
 
@@ -141,26 +161,28 @@ class Policy:
         return sorted(self.reads)
 
 
-POLICY = Policy()
-
-
 @contextlib.contextmanager
 def _resolving():
-    """Let seam's own path resolution reach the real stat and the real open.
+    """Let seam's own path resolution reach the real stat.
 
-    `os.path.realpath` stats every component of a path. Under guards `os.stat`
-    is a policy hook, so it is swapped back for the duration and restored after.
-    A handler cannot reach this: it only runs while seam is resolving a path.
+    `os.path.realpath` stats every path component. Under guards `os.stat` is a
+    policy hook, so it is swapped back for the duration and restored after.
+
+    This runs once at import, while `POLICY` is still being constructed, so it
+    tolerates the policy not existing yet.
     """
-    was_resolving = POLICY._resolving
+    policy = globals().get("POLICY")
+    was_resolving = policy._resolving if policy is not None else False
     stat, lstat = os.stat, os.lstat
-    POLICY._resolving = True
+    if policy is not None:
+        policy._resolving = True
     os.stat, os.lstat = _REAL_STAT, _REAL_LSTAT
     try:
         yield
     finally:
         os.stat, os.lstat = stat, lstat
-        POLICY._resolving = was_resolving
+        if policy is not None:
+            policy._resolving = was_resolving
 
 
 def _norm(path):
@@ -191,6 +213,11 @@ def _abs(path):
     return None
 
 
+# Constructed after `_norm` and `_interpreter_dirs` are defined: the Policy
+# resolves interpreter paths at construction time.
+POLICY = Policy()
+
+
 @contextlib.contextmanager
 def trusted():
     """Seam's own file I/O. The filesystem policy does not apply to it."""
@@ -203,15 +230,23 @@ def trusted():
 
 
 def allow_write(path):
-    """Grant write access to one exact path. Used for the artifact."""
+    """Grant write access to one exact path. Used for the artifact.
+
+    Safe to call before the guards are installed: the registration survives
+    `install_guards`. Paths are exact, never prefixes, so granting one file
+    does not grant its directory.
+    """
     normalized = _norm(path)
     if normalized is not None:
+        POLICY.extra_writes.add(normalized)
         POLICY.write_paths.add(normalized)
 
 
 def allow_read(path):
+    """Grant read access to one exact path. Safe to call before `install_guards`."""
     normalized = _norm(path)
     if normalized is not None:
+        POLICY.extra_reads.add(normalized)
         POLICY.read_paths.add(normalized)
 
 
@@ -311,13 +346,6 @@ class _BlockedDatetime(_datetime.datetime):
     def utcnow(cls):
         raise Fault("real_clock", op="datetime.utcnow")
 
-
-#: The real `os.stat`, kept before the patch so path resolution can still work.
-#: `os.path.realpath` needs a real stat result for every path component, so the
-#: guarded version cannot simply return None; seam's own code has to reach the
-#: original while a handler cannot.
-_REAL_STAT = os.stat
-_REAL_LSTAT = os.lstat
 
 # A fresh `random.Random()` is the common escape. The module functions are never
 # called by an instance, so the instance methods are what actually need blocking.

@@ -81,6 +81,33 @@ def run_checkout(case, namespace, artifact, extra=None, timeout=10):
     return run_proc([sys.executable, "-m", "seam.proof.checkout"], env, timeout=timeout)
 
 
+def run_sim_program(source, env, timeout=10):
+    """Run a small program that builds a runtime and calls seam.main.
+
+    Used for guard policy checks that need a product-shaped runtime rather
+    than the checkout proof.
+    """
+    return run_script(source, env, timeout=timeout)
+
+
+def run_product_case(case, namespace, artifact, source, extra=None, timeout=10):
+    """Run `source` against `case` in a fresh sim process.
+
+    `source` is expected to import seam, wire its own runtime, and call main.
+    The case supplies the script tables and arrivals; the program supplies the
+    handlers, which is the split a real product has.
+    """
+    env = child_env(
+        SEAM_SIM="1",
+        SEAM_NAMESPACE=namespace,
+        SEAM_CASE=case,
+        SEAM_ARTIFACT=artifact,
+    )
+    if extra:
+        env.update(extra)
+    return run_script(source, env, timeout=timeout)
+
+
 def run_script(source, env, timeout=10):
     import tempfile
 

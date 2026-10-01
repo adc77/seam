@@ -529,5 +529,76 @@ class ParentStaysLiveTest(unittest.TestCase):
         self.assertIsInstance(time.time(), float)
 
 
+class GuardPolicyUnitTest(unittest.TestCase):
+    """Policy bookkeeping that does not need the guards installed.
+
+    The guards can only be installed once per process, so these exercise the
+    Policy object directly. The behavioural half lives in tests/test_sim.py.
+    """
+
+    def test_registration_survives_a_reset(self):
+        from seam.guard import POLICY, _norm, allow_read, allow_write
+
+        saved = (
+            set(POLICY.read_paths),
+            set(POLICY.write_paths),
+            set(POLICY.extra_reads),
+            set(POLICY.extra_writes),
+            POLICY.armed,
+        )
+        try:
+            # Paths are normalized, so /tmp and /private/tmp are the same entry.
+            read = _norm("/tmp/seam-unit-read")
+            write = _norm("/tmp/seam-unit-write")
+            artifact = _norm("/tmp/other-artifact")
+            allow_read("/tmp/seam-unit-read")
+            allow_write("/tmp/seam-unit-write")
+            POLICY.reset(write_paths=("/tmp/other-artifact",))
+            self.assertIn(read, POLICY.read_paths)
+            self.assertIn(write, POLICY.write_paths)
+            # The runner's own artifact path is still there too.
+            self.assertIn(artifact, POLICY.write_paths)
+        finally:
+            (
+                POLICY.read_paths,
+                POLICY.write_paths,
+                POLICY.extra_reads,
+                POLICY.extra_writes,
+                POLICY.armed,
+            ) = saved
+
+    def test_paths_are_exact_not_prefixes(self):
+        from seam.guard import POLICY, _norm, allow_read
+
+        saved = (set(POLICY.read_paths), set(POLICY.extra_reads), POLICY.armed)
+        try:
+            allow_read("/tmp/seam-dir")
+            # A sibling that merely shares the prefix is not granted.
+            self.assertNotIn(_norm("/tmp/seam-dir-other"), POLICY.read_paths)
+            self.assertIn(_norm("/tmp/seam-dir"), POLICY.read_paths)
+        finally:
+            POLICY.read_paths, POLICY.extra_reads, POLICY.armed = saved
+
+    def test_interpreter_reads_are_not_recorded_as_provenance(self):
+        import sysconfig
+
+        from seam.guard import POLICY, _interpreter_dirs, _norm
+
+        saved = set(POLICY.reads)
+        try:
+            self.assertTrue(_interpreter_dirs(), "interpreter directories should resolve")
+            # Something that really is interpreter code, under the real stdlib.
+            module = _norm(os.path.join(sysconfig.get_path("stdlib"), "json", "__init__.py"))
+            self.assertTrue(POLICY.is_interpreter(module))
+            POLICY.reads = set()
+            POLICY.note_read(module)
+            self.assertEqual(POLICY.reads, set())
+            outside = _norm("/tmp/some-fixture")
+            POLICY.note_read(outside)
+            self.assertEqual(POLICY.reads, {outside})
+        finally:
+            POLICY.reads = saved
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -17,6 +17,7 @@ from tests.support import (
     child_env,
     run_checkout,
     run_proc,
+    run_product_case,
     run_script,
     write_json,
 )
@@ -287,6 +288,60 @@ class ProcessTest(unittest.TestCase):
                 self.assertEqual(art["fault"]["op"], "ctypes")
                 digests.append(art["digest"])
             self.assertEqual(digests[0], digests[1])
+
+    def test_allowlisted_read_is_recorded_but_not_digested(self):
+        """A product declares a fixture path, reads it, and the read shows up as
+        provenance. The digest must not move: fs_reads is about the host, not
+        the run."""
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = os.path.join(directory, "fixture.txt")
+            with open(fixture, "w", encoding="ascii") as handle:
+                handle.write("alpha\n")
+            out = os.path.join(directory, "out.json")
+            script = (
+                "import os, sys\n"
+                "from seam import Runtime, main\n"
+                "from seam.guard import allow_read\n"
+                # Registered before main, the way a product wires its runtime.
+                "allow_read(os.environ['FIXTURE'])\n"
+                "rt = Runtime(namespace='shop')\n"
+                # The case scripts both ports, so the runtime must declare both.\n"
+                "rt.port('payments', lambda: (lambda request: {'status': 'declined'}))\n"
+                "rt.port('email', lambda: (lambda request: {'status': 'accepted'}))\n"
+                "def message(ctx, body):\n"
+                "    with open(os.environ['FIXTURE'], encoding='ascii') as handle:\n"
+                "        ctx.emit('payments', {'line': handle.readline().strip()})\n"
+                "rt.on('message', message)\n"
+                "rt.on('remind', lambda ctx, body: None)\n"
+                "code = main(rt)\n"
+                "sys.stdout.write('CODE %s\\n' % code)\n"
+            )
+            case = json.loads(open(DECLINED, encoding="utf-8").read())
+            case["arrivals"] = [{"at_ns": 0, "handler": "message", "body": {"sku": "book", "amount": 1}}]
+            # The declined case matches the payment request on `amount`, so the
+            # handler has to send a request the script can answer.
+            case["ports"]["payments"]["replies"] = [
+                {"match": {"line": "alpha"}, "response": {"status": "declined"}}
+            ]
+            case["assertions"] = [{"op": "port_response", "port": "payments", "i": 0, "match": {"status": "declined"}}]
+            case_path = os.path.join(directory, "case.json")
+            write_json(case_path, case)
+            proc = run_product_case(
+                case_path,
+                "sim-checkout-declined",
+                out,
+                script,
+                extra={"FIXTURE": fixture},
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("CODE 0", proc.stdout)
+            art = loads(open(out, encoding="ascii").read())
+            self.assertEqual(art["status"], "passed")
+            self.assertEqual(art["port_calls"][0]["request"], {"line": "alpha"})
+            self.assertIn(os.path.realpath(fixture), art["fs_reads"])
+            # fs_reads is provenance, so it must stay out of the digest body.
+            self.assertNotIn("fs_reads", dumps(body_of(art)))
+            self.assertEqual(digest(body_of(art)), art["digest"])
 
     def test_refuses_and_second_run_and_factory(self):
         with tempfile.TemporaryDirectory() as directory:
