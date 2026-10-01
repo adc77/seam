@@ -206,9 +206,24 @@ class ProcessTest(unittest.TestCase):
             "subprocess": ("real_io", "subprocess"),
             "datetime": ("real_clock", "datetime.now"),
             "random": ("unseeded_random", "random"),
+            # Escapes found by probing the guard, each one a way a run could
+            # otherwise report `passed` while depending on the host.
+            "random_instance": ("unseeded_random", "random"),
+            "ctypes": ("real_io", "ctypes"),
+            "perf_counter": ("real_clock", "time.perf_counter"),
+            "process_time": ("real_clock", "time.process_time"),
+            "file_read": ("file_read", "file.read"),
+            "file_write": ("file_write", "file.write"),
+            "os_open_read": ("file_read", "file.read"),
+            "os_stat": ("file_read", "file.stat"),
+            "listdir": ("file_read", "os.listdir"),
+            "scandir": ("file_read", "os.scandir"),
         }
         raw = json.loads(open(DECLINED, encoding="utf-8").read())
         with tempfile.TemporaryDirectory() as directory:
+            leak_file = os.path.join(directory, "secret.txt")
+            with open(leak_file, "w", encoding="ascii") as handle:
+                handle.write("secret")
             for kind, (code, op) in expect.items():
                 with self.subTest(kind=kind):
                     case = json.loads(json.dumps(raw))
@@ -225,7 +240,13 @@ class ProcessTest(unittest.TestCase):
                     case_path = os.path.join(directory, kind + ".json")
                     out = os.path.join(directory, kind + "-out.json")
                     write_json(case_path, case)
-                    proc = run_checkout(case_path, "sim-leak-case", out, timeout=5)
+                    proc = run_checkout(
+                        case_path,
+                        "sim-leak-case",
+                        out,
+                        extra={"SEAM_LEAK_FILE": leak_file, "SEAM_LEAK_DIR": directory},
+                        timeout=5,
+                    )
                     self.assertEqual(proc.returncode, 2, proc.stderr)
                     art = loads(open(out, encoding="ascii").read())
                     self.assertEqual(art["fault"]["code"], code)
@@ -233,6 +254,39 @@ class ProcessTest(unittest.TestCase):
                     self.assertEqual(art["port_calls"], [])
                     self.assertNotIn("should-not-run", proc.stdout + proc.stderr)
                     self.assertNotIn("203.0.113.1", proc.stdout + proc.stderr)
+                    # A refused write must not have touched the file.
+                    with open(leak_file, encoding="ascii") as handle:
+                        self.assertEqual(handle.read(), "secret")
+
+    def test_libc_clock_fails_closed_instead_of_passing(self):
+        """The defect this guards: a libc clock read a passing run with a
+        digest that changed on every replay. It must fault now, and fault the
+        same way twice."""
+        raw = json.loads(open(DECLINED, encoding="utf-8").read())
+        with tempfile.TemporaryDirectory() as directory:
+            case = json.loads(json.dumps(raw))
+            case["name"] = "libc-case"
+            case["namespace"] = "sim-libc-case"
+            case["arrivals"] = [
+                {
+                    "at_ns": 0,
+                    "handler": "message",
+                    "body": {"sku": "book", "amount": 500, "leak": "ctypes"},
+                }
+            ]
+            case_path = os.path.join(directory, "libc.json")
+            write_json(case_path, case)
+            digests = []
+            for index in (1, 2):
+                out = os.path.join(directory, f"libc-{index}.json")
+                proc = run_checkout(case_path, "sim-libc-case", out, timeout=5)
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+                art = loads(open(out, encoding="ascii").read())
+                self.assertEqual(art["status"], "failed")
+                self.assertEqual(art["fault"]["code"], "real_io")
+                self.assertEqual(art["fault"]["op"], "ctypes")
+                digests.append(art["digest"])
+            self.assertEqual(digests[0], digests[1])
 
     def test_refuses_and_second_run_and_factory(self):
         with tempfile.TemporaryDirectory() as directory:
