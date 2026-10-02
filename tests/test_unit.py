@@ -544,7 +544,7 @@ class GuardPolicyUnitTest(unittest.TestCase):
             set(POLICY.write_paths),
             set(POLICY.extra_reads),
             set(POLICY.extra_writes),
-            POLICY.armed,
+            POLICY.sealed,
         )
         try:
             # Paths are normalized, so /tmp and /private/tmp are the same entry.
@@ -564,20 +564,20 @@ class GuardPolicyUnitTest(unittest.TestCase):
                 POLICY.write_paths,
                 POLICY.extra_reads,
                 POLICY.extra_writes,
-                POLICY.armed,
+                POLICY.sealed,
             ) = saved
 
     def test_paths_are_exact_not_prefixes(self):
         from seam.guard import POLICY, _norm, allow_read
 
-        saved = (set(POLICY.read_paths), set(POLICY.extra_reads), POLICY.armed)
+        saved = (set(POLICY.read_paths), set(POLICY.extra_reads), POLICY.sealed)
         try:
             allow_read("/tmp/seam-dir")
             # A sibling that merely shares the prefix is not granted.
             self.assertNotIn(_norm("/tmp/seam-dir-other"), POLICY.read_paths)
             self.assertIn(_norm("/tmp/seam-dir"), POLICY.read_paths)
         finally:
-            POLICY.read_paths, POLICY.extra_reads, POLICY.armed = saved
+            POLICY.read_paths, POLICY.extra_reads, POLICY.sealed = saved
 
     def test_interpreter_reads_are_not_recorded_as_provenance(self):
         import sysconfig

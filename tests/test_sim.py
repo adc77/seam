@@ -289,6 +289,117 @@ class ProcessTest(unittest.TestCase):
                 digests.append(art["digest"])
             self.assertEqual(digests[0], digests[1])
 
+    def test_handler_cannot_widen_its_own_policy(self):
+        """A handler must not be able to grant itself host access.
+
+        Every one of these reached the host filesystem and the run still
+        reported `passed`, before the policy was sealed. They are the reason
+        `allow_read`, `allow_write` and `trusted()` are refused inside a handler
+        and why the audit hook keys off a token rather than a boolean flag.
+        """
+        attempts = {
+            # Each entry is (body, actually_reaches_the_host). An attempt that
+            # is refused mid-handler may still leave the run green, because the
+            # handler was doing nothing else that mattered. What must never
+            # happen is the host value reaching the artifact.
+            "allow_read": (
+                "from seam.guard import allow_read\n"
+                "allow_read(os.environ['SECRET'])\n"
+                "ctx.emit('payments', {'leaked': open(os.environ['SECRET']).read().strip()})\n",
+                True,
+            ),
+            "trusted": (
+                "from seam.guard import trusted\n"
+                "with trusted():\n"
+                "    data = open(os.environ['SECRET']).read()\n"
+                "ctx.emit('payments', {'leaked': data.strip()})\n",
+                True,
+            ),
+            "read_paths": (
+                "from seam.guard import POLICY\n"
+                "POLICY.read_paths.add(os.path.realpath(os.environ['SECRET']))\n"
+                "ctx.emit('payments', {'leaked': open(os.environ['SECRET']).read().strip()})\n",
+                False,
+            ),
+            "armed_flag": (
+                "from seam.guard import POLICY\n"
+                "POLICY.armed = False\n"
+                "ctx.emit('payments', {'leaked': open(os.environ['SECRET']).read().strip()})\n",
+                False,
+            ),
+            "extra_reads": (
+                "from seam.guard import POLICY\n"
+                "POLICY.extra_reads.add(os.path.realpath(os.environ['SECRET']))\n"
+                "ctx.emit('payments', {'leaked': open(os.environ['SECRET']).read().strip()})\n",
+                False,
+            ),
+            "real_stat": (
+                "import os\n"
+                "from seam.guard import _real_stat\n"
+                "st = _real_stat(os.environ['SECRET'])\n"
+                "ctx.emit('payments', {'size': st.st_size})\n",
+                True,
+            ),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            secret = os.path.join(directory, "secret.txt")
+            with open(secret, "w", encoding="ascii") as handle:
+                handle.write("HOST-SECRET-VALUE")
+            for name, (body, reaches_host) in attempts.items():
+                with self.subTest(attempt=name):
+                    case = json.loads(open(DECLINED, encoding="utf-8").read())
+                    case["name"] = "widen-case"
+                    case["namespace"] = "sim-widen-case"
+                    case["arrivals"] = [{"at_ns": 0, "handler": "message", "body": {"sku": "book", "amount": 1}}]
+                    case["ports"]["payments"]["replies"] = [
+                        {"match": {"$any": True}, "response": {"status": "declined"}}
+                    ]
+                    case["assertions"] = []
+                    case_path = os.path.join(directory, name + ".json")
+                    out = os.path.join(directory, name + "-out.json")
+                    write_json(case_path, case)
+                    script = (
+                        "import os, sys\n"
+                        "from seam import Runtime, main\n"
+                        "rt = Runtime(namespace='shop')\n"
+                        "rt.port('payments', lambda: (lambda request: {'status': 'declined'}))\n"
+                        "rt.port('email', lambda: (lambda request: {'status': 'accepted'}))\n"
+                        "def message(ctx, body):\n"
+                        # The attempt body is inserted already indented, so it
+                        # becomes the body of `message`.
+                        + "".join(
+                            "    " + line + "\n"
+                            for line in body.strip("\n").split("\n")
+                        )
+                        + "rt.on('message', message)\n"
+                        "rt.on('remind', lambda ctx, body: None)\n"
+                        "sys.stdout.write('CODE %s\\n' % main(rt))\n"
+                    )
+                    proc = run_product_case(
+                        case_path,
+                        "sim-widen-case",
+                        out,
+                        script,
+                        extra={"SECRET": secret},
+                    )
+                    art = loads(open(out, encoding="ascii").read())
+                    blob = dumps(art) + proc.stdout + proc.stderr
+                    # The host value must appear nowhere in the artifact or output.
+                    self.assertNotIn("HOST-SECRET-VALUE", blob, name)
+                    # `main` returns the exit code but the program does not exit
+                    # with it, so the artifact is the source of truth here.
+                    self.assertIn("CODE 2", proc.stdout, name)
+                    if reaches_host:
+                        # The attempt itself has to be stopped, not just silent.
+                        self.assertEqual(art["status"], "failed", name)
+                        self.assertEqual(
+                            art["fault"]["code"], "file_access", name
+                        )
+                    else:
+                        # This one only asks for metadata; blocking the stat is
+                        # enough, and the run may still finish normally.
+                        self.assertNotIn('"leaked"', blob, name)
+
     def test_allowlisted_read_is_recorded_but_not_digested(self):
         """A product declares a fixture path, reads it, and the read shows up as
         provenance. The digest must not move: fs_reads is about the host, not

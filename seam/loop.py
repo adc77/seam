@@ -7,6 +7,7 @@ from seam.case import TERMINAL
 from seam.clock import VirtualClock, format_utc
 from seam.ctx import Ctx, assert_int, replace_at
 from seam.errors import Fault, Refuse
+from seam.guard import _handler_scope
 from seam.queue import Queue
 from seam.rng import Rng
 
@@ -268,7 +269,10 @@ class Engine:
         ctx = Ctx(self, handler)
         self._set_depth(1)
         try:
-            self.handlers[handler](ctx, deep_copy(body_copy))
+            # Inside this scope the filesystem policy refuses to be widened and
+            # `trusted()` is refused, so a handler cannot grant itself access.
+            with _handler_scope():
+                self.handlers[handler](ctx, deep_copy(body_copy))
         except Fault as err:
             event["status"] = "error"
             if err.during is None:

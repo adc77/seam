@@ -61,11 +61,7 @@ _READ_EVENTS = {
     "os.listdir": "os.listdir",
     "os.scandir": "os.scandir",
 }
-#: The real `os.stat`, kept before `install_guards` patches it so seam's own path
-#: resolution can still work. `os.path.realpath` needs a real stat result for
-#: every path component, so the guarded version cannot simply return None.
-_REAL_STAT = os.stat
-_REAL_LSTAT = os.lstat
+
 
 #: `open` and `os.open` both fire `open`. These are the modes that can change a file.
 _WRITE_MODES = frozenset("wax+")
@@ -110,6 +106,11 @@ class Policy:
     `allow_read` and `allow_write` before the run starts. They survive
     `reset`, because installing the guards must not silently discard a
     registration the product made while building its runtime.
+
+    `sealed` closes registration once the run is under way. Without it a
+    handler could call `allow_read` on itself and read the host filesystem,
+    and the run would still report `passed`. That was a real hole, found by
+    probing the public API rather than by reading the code.
     """
 
     def __init__(self):
@@ -121,8 +122,15 @@ class Policy:
         self.interpreter_paths = _interpreter_dirs()
         self.extra_reads = set()
         self.extra_writes = set()
-        self.armed = False
+        self.sealed = False
         self._resolving = False
+        self._in_handler = False
+        #: Sentinel. While a `trusted()` block is active this holds that block's
+        #: token; the audit hook tests it against None, so a handler cannot opt
+        #: itself out by assigning to a public flag. There is deliberately no
+        #: boolean here: an earlier version had one, and a handler set it to
+        #: False and read the host filesystem with the run still passing.
+        self.trusted = None
 
     def reset(self, write_paths=(), read_paths=()):
         self._resolving = False
@@ -142,7 +150,11 @@ class Policy:
         self.write_paths |= self.extra_writes
         self.read_paths |= self.extra_reads
         self.reads = set()
-        self.armed = True
+        # Registration closes here. From this point on the only code that may
+        # widen the policy is seam itself.
+        self.sealed = True
+        self._in_handler = False
+        self.trusted = None
 
     def is_interpreter(self, real):
         """True when the path belongs to the interpreter's own code."""
@@ -176,7 +188,13 @@ def _resolving():
     stat, lstat = os.stat, os.lstat
     if policy is not None:
         policy._resolving = True
-    os.stat, os.lstat = _REAL_STAT, _REAL_LSTAT
+    # The originals, not the sealed wrappers: this runs during POLICY's own
+    # construction, before the wrappers exist, and by definition it is seam's
+    # own work rather than a handler's.
+    sealed = globals().get("_real_stat")
+    os.stat, os.lstat = (
+        (_real_stat, _real_lstat) if sealed is not None else (stat, lstat)
+    )
     try:
         yield
     finally:
@@ -218,24 +236,83 @@ def _abs(path):
 POLICY = Policy()
 
 
+#: The real `os.stat`, kept before `install_guards` patches it so seam's own path
+#: resolution can still work. `os.path.realpath` needs a real stat result for
+#: every path component, so the guarded version cannot simply return None.
+def _make_sealed_stat(real_stat, real_lstat):
+    """Wrap the real stat functions so they refuse to work inside a handler.
+
+    A handler that could reach the raw `os.stat` would read host file metadata
+    straight into a port request, and the run would still report `passed` with a
+    digest that depended on the host. Closing over the originals means the only
+    handles are the ones returned here, which are not exported at module level.
+
+    The refusal keys off `_in_handler`, but it must not fire while seam is
+    resolving a path on a handler's behalf: `_check_stat` normalises its argument
+    through `_norm`, which is seam's own work happening inside the handler's
+    window. `_resolving` marks that, so the two conditions are checked separately.
+    """
+
+    def sealed_stat(path, *args, **kwargs):
+        if POLICY._in_handler and not POLICY._resolving:
+            raise Fault("file_access", op="file.stat_in_handler")
+        return real_stat(path, *args, **kwargs)
+
+    def sealed_lstat(path, *args, **kwargs):
+        if POLICY._in_handler and not POLICY._resolving:
+            raise Fault("file_access", op="file.stat_in_handler")
+        return real_lstat(path, *args, **kwargs)
+
+    return sealed_stat, sealed_lstat
+
+
+_real_stat, _real_lstat = _make_sealed_stat(os.stat, os.lstat)
+
+
 @contextlib.contextmanager
 def trusted():
-    """Seam's own file I/O. The filesystem policy does not apply to it."""
-    was = POLICY.armed
-    POLICY.armed = False
+    """Seam's own file I/O. The filesystem policy does not apply to it.
+
+    Only seam may call this. It is re-entrant, but it is refused once a handler
+    is running: a handler that could reach it would have a documented way to
+    read the host filesystem and still report `passed`.
+    """
+    if POLICY.sealed and POLICY._in_handler:
+        raise Fault("file_access", op="file.trusted_in_handler")
+    token = object()
+    previous = POLICY.trusted
+    POLICY.trusted = token
     try:
         yield
     finally:
-        POLICY.armed = was
+        POLICY.trusted = previous
+
+
+@contextlib.contextmanager
+def _handler_scope():
+    """Mark the window in which product handler code is executing.
+
+    Inside it, the policy refuses to be widened and `trusted()` is refused.
+    Seam's own bookkeeping still runs: the artifact write happens outside this.
+    """
+    was = POLICY._in_handler
+    POLICY._in_handler = True
+    try:
+        yield
+    finally:
+        POLICY._in_handler = was
 
 
 def allow_write(path):
-    """Grant write access to one exact path. Used for the artifact.
+    """Grant write access to one exact path, before the run starts.
 
-    Safe to call before the guards are installed: the registration survives
-    `install_guards`. Paths are exact, never prefixes, so granting one file
-    does not grant its directory.
+    Safe to call before `install_guards`: the registration survives. Refused
+    once a handler is executing, because a handler must not widen its own
+    policy. Paths are exact, never prefixes, so granting one file does not
+    grant its directory.
     """
+    if POLICY.sealed and POLICY._in_handler:
+        raise Fault("file_access", op="file.allow_in_handler")
     normalized = _norm(path)
     if normalized is not None:
         POLICY.extra_writes.add(normalized)
@@ -243,7 +320,12 @@ def allow_write(path):
 
 
 def allow_read(path):
-    """Grant read access to one exact path. Safe to call before `install_guards`."""
+    """Grant read access to one exact path, before the run starts.
+
+    Safe to call before `install_guards`. Refused from inside a handler.
+    """
+    if POLICY.sealed and POLICY._in_handler:
+        raise Fault("file_access", op="file.allow_in_handler")
     normalized = _norm(path)
     if normalized is not None:
         POLICY.extra_reads.add(normalized)
@@ -325,15 +407,20 @@ def _audit(event, args):
     if event in _CTYPES_EVENTS:
         # libc is reachable from here, so real clocks and real syscalls are too.
         raise Fault("real_io", op="ctypes")
+    # Seam's own I/O is the only thing allowed to stand down, and it says so by
+    # holding a trusted token rather than by clearing a flag a handler could
+    # also clear. A handler that set `POLICY.armed = False` used to disable the
+    # filesystem policy entirely; `_trusted` is not reachable that way.
+    trusted = POLICY.trusted
     if event in _WRITE_EVENTS:
-        if POLICY.armed:
+        if trusted is None:
             raise Fault("file_write", op=_WRITE_EVENTS[event])
         return
     if event in _READ_EVENTS:
-        if POLICY.armed:
+        if trusted is None:
             raise Fault("file_read", op=_READ_EVENTS[event])
         return
-    if event == "open" and args and POLICY.armed:
+    if event == "open" and args and trusted is None:
         _check_open(args[0], args[1], args[2] if len(args) > 2 else None)
 
 
