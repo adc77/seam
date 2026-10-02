@@ -35,3 +35,18 @@ Local implementation of PLAN.md. Heavy work is skipped and written down here. No
   - Interpreter paths were only populated on reset, so `is_interpreter` was wrong whenever it was consulted before `install_guards`.
 - Two existing tests asserted the old permissive behaviour (a handler writing any file, a test reading the artifact directly). Both now express the policy: the test's own I/O runs inside `seam.guard.trusted()`, which is what that context manager is for.
 - Skipped: none. CI added in `.github/workflows/test.yml`: the suite on ubuntu and macos against 3.13 and 3.14, the checkout proof with its pinned digest, a wheel build that installs and ships the proof cases, and a job asserting the audit events the guard depends on actually fire on the runner. That last one exists because a green suite on a platform missing an event would be a false green. Every CI command was run locally before being committed; the `os.scandir` check failed on the first attempt and was corrected.
+
+## 2026-10-01 — reviewing the guard as an attacker
+
+- The first CI run came back failed with all four suite jobs green. The `guard` job referenced `${{ matrix.os }}` but declared no `strategy.matrix`, so GitHub could not expand it and dropped the job. Fixed; it now runs on both platforms.
+- Then I reviewed this branch's own guard as an attacker rather than its author, and found six ways a handler could reach the host. Three were real breaches of the policy this branch introduced, and all three reported `passed`:
+  - `allow_read(SECRET)` from inside a handler, then reading it.
+  - `with trusted():` reading it.
+  - Setting `POLICY.armed = False`, which disabled the filesystem policy outright.
+- `allow_read`, `allow_write` and `trusted()` exist for a product to call while wiring up its runtime, and nothing stopped a handler calling them mid-run. The policy now seals at install time and refuses all three from inside a handler with `file_access`.
+- `POLICY.armed` was a boolean any handler could clear. It is gone: the audit hook tests a token that only a real `trusted()` block sets, so there is no public switch to flip.
+- The fourth hole was mine. Saving the real `os.stat` so that `realpath` could work left it importable from `seam.guard`, and a handler could read host file metadata straight into a port request and into the digest, with the run still `passed`. It is now closed over by `_make_sealed_stat` and refuses to work inside a handler.
+- One subtlety worth recording: `_check_stat` normalises its argument through `_norm`, which is seam's own work happening inside the handler's window. The sealed stat therefore also checks `_resolving`, or seam refuses its own path handling and every filesystem fault becomes `file_access`.
+- Ordering bit twice more while fixing this: `_make_sealed_stat` and the `POLICY` construction each need to come after the other. Both are now defined below the helpers they use.
+- A regression test runs all six attempts and asserts the host value appears nowhere in the artifact. Suite is 39 tests, green.
+- Still true after all of this: the guard refuses the listed standard-library paths and does not contain a process. A name bound before `install_guards()` still points at the original object, and a C extension can reach libc without `ctypes`. The README says so.

@@ -40,6 +40,8 @@ A handler that does any of those faults the run instead:
 
 Reads and writes are refused unless the path is allowlisted. The runner allowlists the artifact, and the interpreter's own directories are allowlisted for reads so a lazy `import` inside a handler still works. A handler that reads an allowlisted path has that read recorded in the artifact under `fs_reads`, outside the digest: it is provenance for a human, not an input to the run. Seam's own file I/O runs inside `seam.guard.trusted()`.
 
+The policy **seals** when the guards install. `allow_read`, `allow_write` and `trusted()` are for a product to call while it is wiring up its runtime; from inside a handler they raise `file_access`, because a handler that could widen its own policy would defeat the point of having one.
+
 **This is not a sandbox.** It refuses the standard-library paths listed above; it does not contain a process. A name bound before `install_guards()` still points at the original object, C extensions can reach libc without going through `ctypes`, and a determined handler can defeat a monkeypatch. Treat the digest as a strong signal for code that follows the rules, not as a security boundary.
 
 ## Adopting it
