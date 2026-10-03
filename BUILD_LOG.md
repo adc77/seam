@@ -116,3 +116,24 @@ Local implementation of PLAN.md. Heavy work is skipped and written down here. No
   both socket defences, or both refusals, turns the suite red. The suite pins
   these guarantees; it cannot say which of two redundant defences did the work.
 
+## 2026-10-01 — what the four-way review actually found
+
+- The guard-bypass reviewer ran ~70 adversarial handlers. Four findings, and three of them reported `passed` while reading the host:
+
+  - **`os.fork` plus `os.execv` was a total escape.** `os.fork` fires an audit event that nothing in the guard inspected. The child is a fresh process with none of the guards installed, so `cat /path/secret.txt` put the file's contents into the artifact with `status: passed`. Fixed by refusing the fork and exec-family events.
+  - **`os.times()`** reports real process and wall time and fires no audit event. Patched like the rest of the clock.
+  - **Set iteration order moved the digest.** `PYTHONHASHSEED` is salted per interpreter, so a handler iterating a set produced a different order every run. `sim_env` now pins the seed for the child, because it cannot be fixed from inside the process.
+  - Host identity is readable and stable per machine (`os.cpu_count`, `platform.node`, `os.getcwd`): the same case yields a different digest on a second machine while both report `passed`. Not faulted, and documented.
+
+- The usability reviewer found two policy bugs that made the guard refuse ordinary product code:
+  - **`os.listdir` and `os.scandir` never consulted the allowlist**, so any cold lazy `import xml.sax` inside a handler faulted. That made the README's promise about the interpreter's directories false. Directory listing now goes through the same allowlist as `open`.
+  - **`_check_stat` took only `(path)` and returned None.** `pathlib`, `shutil` and `linecache` pass `dir_fd` or `follow_symlinks` and died with a `TypeError` instead of the intended `file_read`; a `None` return would also have made `os.path.exists()` answer True for a path that does not exist. It now takes the full signature and returns a real stat result.
+
+- Its central claim, that `os.stat` returned `None` and `os.path.exists` therefore always answered True, was **wrong on the mechanism**: `_check_stat` raises rather than returning, so the silent-true case does not occur. The signature bug was real and is fixed.
+
+- Blocking bare `exec` was tried and broke 26 tests, because CPython raises that event for ordinary `exec()` of a Python object. `os.execv` fires only that event, so it cannot be blocked by name. `os.fork` is the load-bearing defence and is closed; the residual `os.execv` escape is documented in the README rather than papered over.
+
+- The glass reviewer ran 27 mutations and **13 survived**, which is the honest measure of what glass still does not pin: the retry-armed `due` timer, both of `_slot`'s reply guards, and the pass/fail verdict check. They behave correctly today; none is protected against regression. Recorded in the glass PR description rather than left implicit.
+
+- The workflow reviewer found three false claims in my own PR text, now corrected: `shutil.copy` faults as `file_read`, not `file_write`; both test counts were stale; and "CI tests what a consumer actually gets" was wrong, since seam is not on PyPI and the `seam` name there belongs to an unrelated package.
+
