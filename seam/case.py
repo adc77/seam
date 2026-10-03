@@ -5,11 +5,21 @@ import os
 import re
 from dataclasses import dataclass, field
 
-from seam.canon import UINT64_MAX, digest, loads, walk
+from seam.canon import TIMER_TOKEN_PREFIX, UINT64_MAX, digest, loads, walk
 from seam.errors import Refuse
 from seam.ports import RecordingPort, ScriptPort, load_tape, resolve_tape, validate_match
 
 MAX_CASE = 4 * 1024 * 1024
+
+# Ceilings on a case file, so a malformed or hostile case cannot make the runner
+# do unbounded work before it starts. These bound the *input*; `max_events` and
+# `max_port_calls` below bound the *run*, and default to the same numbers.
+MAX_ARRIVALS = 100_000
+MAX_REPLIES_PER_PORT = 10_000
+MAX_ASSERTIONS = 1_000
+DEFAULT_MAX_EVENTS = 100_000
+DEFAULT_MAX_PORT_CALLS = 10_000
+
 SIM_NS = re.compile(r"^sim-[a-z0-9]([a-z0-9-]{0,60}[a-z0-9])?$")
 CASE_NAME = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 IDENT = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
@@ -31,13 +41,24 @@ CASE_KEYS = {
     "grader",
     "log_state",
 }
+#: Ways a run can end that are not faults. A `stopped` assertion may name one of
+#: these, and nothing raises them: the loop sets `stop_reason` directly.
 STOP_REASONS = {
     "quiescence",
     "deadline",
     "terminal",
+}
+#: Fault codes. These are raised as `Fault(...)` somewhere in the package, and a
+#: `fault_is` or `stopped` assertion may name one. Kept separate from
+#: `STOP_REASONS` because the two are different kinds of thing: adding a fault
+#: code means raising it, adding a stop reason means setting it.
+FAULT_CODES = {
     "real_io",
     "real_clock",
     "unseeded_random",
+    "file_read",
+    "file_write",
+    "file_access",
     "thread",
     "handler_error",
     "tape_mismatch",
@@ -146,7 +167,7 @@ def _assertion(item):
             _bad()
         if named and (type(item["name"]) is not str or not TERMINAL.match(item["name"])):
             _bad()
-        if tokened and (type(item["token"]) is not str or not item["token"].startswith("t")):
+        if tokened and (type(item["token"]) is not str or not item["token"].startswith(TIMER_TOKEN_PREFIX)):
             _bad()
     elif op == "state_is":
         if keys != {"op", "path", "value"} or type(item["path"]) is not str:
@@ -154,7 +175,9 @@ def _assertion(item):
     elif op == "stopped":
         if not keys <= {"op", "reason", "terminal"} or "reason" not in keys:
             _bad()
-        if item["reason"] not in STOP_REASONS:
+        # A `stopped` assertion may name a stop reason or a fault code: the loop
+        # reports either through `stop_reason`.
+        if item["reason"] not in (STOP_REASONS | FAULT_CODES):
             _bad()
         if "terminal" in item and (type(item["terminal"]) is not str or not TERMINAL.match(item["terminal"])):
             _bad()
@@ -187,7 +210,7 @@ def normalize(raw, *, ports, handlers, namespace):
     _obj(clock, {"start_ns", "epoch"}, {"start_ns", "epoch"})
     if clock["epoch"] != EPOCH or type(clock["start_ns"]) is not int or clock["start_ns"] < 0:
         _bad()
-    if type(raw["arrivals"]) is not list or len(raw["arrivals"]) > 100_000:
+    if type(raw["arrivals"]) is not list or len(raw["arrivals"]) > MAX_ARRIVALS:
         _bad()
     arrivals = []
     for item in raw["arrivals"]:
@@ -221,7 +244,7 @@ def normalize(raw, *, ports, handlers, namespace):
                 if type(unmatched) is not dict or set(unmatched) != {"response"}:
                     _bad()
             replies_in = spec["replies"]
-            if type(replies_in) is not list or len(replies_in) > 10_000:
+            if type(replies_in) is not list or len(replies_in) > MAX_REPLIES_PER_PORT:
                 _bad()
             replies = []
             for reply in replies_in:
@@ -258,8 +281,8 @@ def normalize(raw, *, ports, handlers, namespace):
     allow = stop_in.get("allow_quiescence", False)
     if type(allow) is not bool:
         _bad()
-    max_events = stop_in.get("max_events", 100_000)
-    max_calls = stop_in.get("max_port_calls", 10_000)
+    max_events = stop_in.get("max_events", DEFAULT_MAX_EVENTS)
+    max_calls = stop_in.get("max_port_calls", DEFAULT_MAX_PORT_CALLS)
     if type(max_events) is not int or type(max_calls) is not int or max_events < 1 or max_calls < 1:
         _bad()
     deadline = stop_in.get("deadline_ns")
@@ -273,7 +296,7 @@ def normalize(raw, *, ports, handlers, namespace):
     if terminal is not None and (type(terminal) is not str or not TERMINAL.match(terminal)):
         _bad()
     assertions = raw.get("assertions", [])
-    if type(assertions) is not list or len(assertions) > 1000:
+    if type(assertions) is not list or len(assertions) > MAX_ASSERTIONS:
         _bad()
     for item in assertions:
         _assertion(item)

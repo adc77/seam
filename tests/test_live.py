@@ -26,6 +26,55 @@ class LiveTest(unittest.TestCase):
                 os.environ.pop(key, None)
         os.environ.update(self._saved)
 
+    def test_sim_flag_has_one_rule_and_every_reader_agrees(self):
+        """`in_sim()` and `start_live()` must answer alike about SEAM_SIM.
+
+        The flag used to be read three ways in one file -- `== "1"`,
+        `not in (None, "0")`, `!= "1"` -- so `SEAM_SIM=true` made `in_sim()`
+        report False while `start_live` refused: one environment, two answers.
+        A later version over-corrected and refused on *any* value including
+        "0", which disagreed in the opposite direction.
+
+        The rule is now: only "1" is a simulation; "0" and "" and unset all mean
+        live; anything else non-empty is refused rather than quietly running
+        live, since a misspelt intent to simulate would otherwise get no error.
+        """
+        from seam.runtime import in_sim
+
+        saved = os.environ.pop("SEAM_SIM", None)
+        try:
+            expectations = [
+                # (value, in_sim, start_live accepted?)
+                (None, False, True),
+                ("", False, True),
+                ("0", False, True),
+                ("1", True, False),
+                ("true", False, False),
+                ("yes", False, False),
+                ("2", False, False),
+            ]
+            for value, expect_sim, expect_live in expectations:
+                label = "unset" if value is None else repr(value)
+                with self.subTest(SEAM_SIM=label):
+                    if value is None:
+                        os.environ.pop("SEAM_SIM", None)
+                    else:
+                        os.environ["SEAM_SIM"] = value
+                    self.assertEqual(in_sim(), expect_sim, f"in_sim() for {label}")
+                    rt = Runtime(namespace="shop")
+                    if expect_live:
+                        rt.start_live()
+                        self.assertEqual(rt.mode, "live")
+                    else:
+                        with self.assertRaises(Refuse) as raised:
+                            rt.start_live()
+                        self.assertEqual(raised.exception.code, "bad_env")
+        finally:
+            if saved is None:
+                os.environ.pop("SEAM_SIM", None)
+            else:
+                os.environ["SEAM_SIM"] = saved
+
     def test_refuses_a_sim_environment_and_a_sim_namespace(self):
         rt = Runtime()
         os.environ["SEAM_CASE"] = "case.json"

@@ -7,6 +7,12 @@ from seam.version import __version__
 
 MAX_ARTIFACT = 32 * 1024 * 1024
 
+#: Mode for the written artifact. `0o644` rather than anything stricter: the
+#: artifact carries the whole run, and a caller may want to read it after the
+#: process exits. It is written to a temp name and renamed, so a reader never
+#: sees a partial file.
+ARTIFACT_MODE = 0o644
+
 
 def digest_body(result):
     """Keys that enter the run digest. Grader failures stay out. A post-seal fault stays out."""
@@ -57,6 +63,8 @@ def assemble(result):
         art["assertions"] = result.assertions
     if result.grader_failures is not None:
         art["grader"] = result.grader_failures
+    if result.fs_reads:
+        art["fs_reads"] = result.fs_reads
     return art
 
 
@@ -93,15 +101,17 @@ def write_artifact(path, obj):
     text = dumps(obj) + "\n"
     data = text.encode("ascii")
     if len(data) > MAX_ARTIFACT:
-        raise OSError("artifact exceeds 32 MiB")
+        # The number comes from the constant, so changing the cap does not leave
+        # a message behind that disagrees with it.
+        raise OSError(f"artifact is {len(data)} bytes, over the {MAX_ARTIFACT} byte limit")
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="ascii", newline="\n") as handle:
         handle.write(text)
         handle.flush()
         os.fsync(handle.fileno())
-    os.chmod(tmp, 0o644)
+    os.chmod(tmp, ARTIFACT_MODE)
     os.replace(tmp, path)
-    os.chmod(path, 0o644)
+    os.chmod(path, ARTIFACT_MODE)
 
 
 def tape_from_artifact(artifact):

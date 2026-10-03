@@ -1,8 +1,7 @@
 """Virtual time. Integer nanoseconds. No tz database and no floats."""
 
+from seam.canon import INT64_MAX
 from seam.errors import Fault
-
-INT64_MAX = 2**63 - 1
 
 
 def _civil_from_days(z):

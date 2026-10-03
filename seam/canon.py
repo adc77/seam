@@ -8,6 +8,23 @@ from seam.errors import Fault, Refuse
 INT64_MIN = -2**63
 INT64_MAX = 2**63 - 1
 UINT64_MAX = 2**64 - 1
+
+#: Bytes in a 64-bit value, for the `.to_bytes` calls that seed the RNG.
+U64_BYTES = 8
+
+#: Width of the hex in an identifier, so every id is the same length and ids
+#: from a live run and a simulated one are interchangeable.
+ID_HEX_WIDTH = 16
+
+#: Prefix on a timer token. Live and sim both mint these, and the case loader
+#: checks a `timer_outcome` token has it, so it is defined once here rather than
+#: spelled three times.
+TIMER_TOKEN_PREFIX = "t"
+
+#: Largest single JSON string accepted, in bytes of its UTF-8 encoding.
+#: Also the ceiling for a whole state snapshot, which is canonicalised to one
+#: string. One limit rather than two, because a snapshot is not meaningfully
+#: different from a large string: both bound how much a run can hold at once.
 MAX_STRING = 1024 * 1024
 
 

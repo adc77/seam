@@ -6,3 +6,5 @@ __pycache__/
 seam-artifact.json
 *.tmp
 *.touched
+build/
+dist/

@@ -1,9 +1,11 @@
 """The handler surface. Live and sim hosts both sit behind this object."""
 
-from seam.canon import INT64_MAX, deep_copy, dumps
+from seam.canon import INT64_MAX, MAX_STRING, deep_copy, dumps
 from seam.errors import Fault
 
-MAX_STATE = 1024 * 1024
+#: A state snapshot is canonicalised to one string before it is measured, so
+#: it is bounded by the same limit as any other string.
+MAX_STATE = MAX_STRING
 
 
 def _check_size(value):

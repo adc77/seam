@@ -62,6 +62,38 @@ def _leak(kind):
         import random
 
         random.random()
+    elif kind == "random_instance":
+        # A fresh Random never calls the module functions, so the instance
+        # methods are the ones that have to be blocked.
+        import random
+
+        random.Random(7).getrandbits(64)
+    elif kind == "ctypes":
+        # libc from here means a real clock and real syscalls.
+        import ctypes
+
+        ctypes.CDLL(None).getpid()
+    elif kind == "perf_counter":
+        import time
+
+        time.perf_counter()
+    elif kind == "process_time":
+        import time
+
+        time.process_time()
+    elif kind == "file_read":
+        open(os.environ["SEAM_LEAK_FILE"], encoding="ascii").read(1)
+    elif kind == "file_write":
+        open(os.environ["SEAM_LEAK_FILE"], "w", encoding="ascii").write("x")
+    elif kind == "os_open_read":
+        fd = os.open(os.environ["SEAM_LEAK_FILE"], os.O_RDONLY)
+        os.close(fd)
+    elif kind == "os_stat":
+        os.stat(os.environ["SEAM_LEAK_FILE"])
+    elif kind == "listdir":
+        os.listdir(os.environ["SEAM_LEAK_DIR"])
+    elif kind == "scandir":
+        [entry.name for entry in os.scandir(os.environ["SEAM_LEAK_DIR"])]
     else:
         raise Fault("bad_value")
 

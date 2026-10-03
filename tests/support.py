@@ -41,6 +41,16 @@ def child_env(**values):
     }
     env["PYTHONPATH"] = REPO
     env["PYTHONUNBUFFERED"] = "1"
+    # Pinned so `PYTHONHASHSEED` cannot be inherited from the parent. Without
+    # it, set and dict iteration order varies per process, so a handler that put
+    # `list(set(...))` into a port request produced a different digest on every
+    # replay -- `status: passed` and a moved digest, which is the one failure
+    # this library exists to prevent. `sim_env` does this too, but nothing in
+    # the repo launched a child through it, so the pin is repeated here where
+    # the tests actually build their environments. A caller passing
+    # PYTHONHASHSEED explicitly still wins, which is what the seam suite's own
+    # test of `sim_env` needs.
+    env.setdefault("PYTHONHASHSEED", "0")
     for key, value in values.items():
         if value is None:
             env.pop(key, None)
@@ -79,6 +89,33 @@ def run_checkout(case, namespace, artifact, extra=None, timeout=10):
     if extra:
         env.update(extra)
     return run_proc([sys.executable, "-m", "seam.proof.checkout"], env, timeout=timeout)
+
+
+def run_sim_program(source, env, timeout=10):
+    """Run a small program that builds a runtime and calls seam.main.
+
+    Used for guard policy checks that need a product-shaped runtime rather
+    than the checkout proof.
+    """
+    return run_script(source, env, timeout=timeout)
+
+
+def run_product_case(case, namespace, artifact, source, extra=None, timeout=10):
+    """Run `source` against `case` in a fresh sim process.
+
+    `source` is expected to import seam, wire its own runtime, and call main.
+    The case supplies the script tables and arrivals; the program supplies the
+    handlers, which is the split a real product has.
+    """
+    env = child_env(
+        SEAM_SIM="1",
+        SEAM_NAMESPACE=namespace,
+        SEAM_CASE=case,
+        SEAM_ARTIFACT=artifact,
+    )
+    if extra:
+        env.update(extra)
+    return run_script(source, env, timeout=timeout)
 
 
 def run_script(source, env, timeout=10):
