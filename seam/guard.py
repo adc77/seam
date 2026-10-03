@@ -31,6 +31,7 @@ import secrets
 import socket
 import sys
 import sysconfig
+import tempfile
 import threading
 import time
 import uuid
@@ -70,33 +71,80 @@ _CTYPES_EVENTS = frozenset({"ctypes.dlopen", "ctypes.dlsym", "ctypes.call_functi
 
 
 def _interpreter_dirs():
-    """Directories the interpreter reads its own code from.
+    """Directories whose reads are not host-state dependence.
 
     A handler that does a lazy `import` reads a `.py` or `.pyc` file. That is
-    not dependence on host state, so these paths are allowlisted for reads.
-    Without this, `import subprocess` inside a handler would fault on the module
-    file before the real leak was ever reached.
+    code, not host state, so importing has to keep working — including a
+    handler importing its own project's modules, which is the ordinary case for
+    a product that lazily pulls in an adapter.
+
+    Taken from `sys.path` rather than from `sysconfig`, because `sysconfig` only
+    reports the interpreter's own directories. A product installed into the user
+    site directory, or a checkout on `PYTHONPATH`, is still code the handler
+    needs to import, and neither appears there.
     """
-    dirs = []
-    for value in (
-        getattr(sys, "prefix", None),
-        getattr(sys, "base_prefix", None),
-        getattr(sys, "exec_prefix", None),
-        sysconfig.get_path("stdlib"),
-        sysconfig.get_path("platstdlib"),
-        sysconfig.get_path("purelib"),
-        sysconfig.get_path("platlib"),
-    ):
+    candidates = []
+    for value in list(sys.path):
         if isinstance(value, str) and value:
-            dirs.append(value)
+            candidates.append(value)
+    for name in (
+        "prefix",
+        "base_prefix",
+        "exec_prefix",
+        "platlibdir",
+    ):
+        value = getattr(sys, name, None)
+        if isinstance(value, str) and value:
+            candidates.append(value)
+    for key in ("stdlib", "platstdlib", "purelib", "platlib"):
+        try:
+            value = sysconfig.get_path(key)
+        except KeyError:
+            value = None
+        if isinstance(value, str) and value:
+            candidates.append(value)
+    # The cwd matters for a product run in place.
+    try:
+        candidates.append(os.getcwd())
+    except OSError:
+        pass
     seen = set()
     out = set()
-    for path in dirs:
+    for path in candidates:
         normalized = _norm(path)
-        if normalized and normalized not in seen:
+        # A zip or egg is code too, but `_norm` cannot resolve one to a
+        # directory, so only real directories are kept.
+        if normalized and normalized not in seen and os.path.isdir(normalized):
             seen.add(normalized)
             out.add(normalized)
+    # The system temp directory is not a code directory. It matters because a
+    # test harness writes its program into a temp file, which puts that whole
+    # directory on `sys.path[0]` and would allowlist every file beside it. It
+    # also matters for anything nested under it, since a harness may create a
+    # subdirectory and put that on the path instead. No product ships modules
+    # out of the temp directory.
+    out = {path for path in out if not _under_system_temp(path)}
     return out
+
+
+def _under_system_temp(normalized):
+    """True when `normalized` sits inside the system temp directory."""
+    roots = []
+    for value in (tempfile.gettempdir(), tempfile.gettempdirb() if hasattr(tempfile, "gettempdirb") else None):
+        if isinstance(value, bytes):
+            try:
+                value = value.decode("utf-8", "replace")
+            except UnicodeError:
+                continue
+        if isinstance(value, str) and value:
+            normalized_root = _norm(value)
+            if normalized_root:
+                roots.append(normalized_root)
+    if not roots:
+        return False
+    return any(
+        normalized == root or normalized.startswith(root + os.sep) for root in roots
+    )
 
 
 class Policy:
@@ -356,8 +404,16 @@ def _check_open(path, mode, flags):
     if real in _DEVICE_RANDOM:
         raise Fault("unseeded_random", op="os.urandom")
     if real is None:
+        # Not a path: either an integer descriptor, or something `_norm` cannot
+        # resolve. Neither can be allowlisted, and the import machinery writes
+        # its `.pyc` through a descriptor, so an fd is permitted. A non-str,
+        # non-PathLike object is refused, because nothing legitimate passes one.
+        if isinstance(path, int):
+            return
         raise Fault("file_access", op="file.unreadable_path")
     if mode is None:
+        # os.open passes mode None and the integer flags instead of a mode
+        # string, so write intent has to be read off the flags.
         write_flags = (
             os.O_WRONLY
             | os.O_RDWR
@@ -396,6 +452,40 @@ def _check_stat(path):
     POLICY.note_read(real)
 
 
+def _is_bytecode_path(path):
+    """True when `path` is inside a `__pycache__` directory.
+
+    A handler importing its own project's modules makes the interpreter write
+    `.pyc` files. That is the import machinery, not the product reaching for the
+    host, and refusing it would make ordinary product code unusable.
+
+    Only paths inside a `__pycache__` directory qualify, so this grants nothing
+    else: a handler cannot write an arbitrary file by naming one.
+    """
+    if not isinstance(path, (str, bytes, os.PathLike)):
+        return False
+    try:
+        if isinstance(path, bytes):
+            path = path.decode("utf-8", "replace")
+        elif isinstance(path, os.PathLike):
+            path = os.fspath(path)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(path, str):
+        return False
+    parts = [part for part in path.replace(os.sep, "/").split("/") if part]
+    # The path itself may be the `__pycache__` directory (mkdir) or a file
+    # inside it (the `.pyc` write), so every component counts.
+    return "__pycache__" in parts
+
+
+def _is_bytecode(event, args):
+    """True for the `__pycache__` writes CPython does when importing."""
+    if event not in ("os.mkdir", "os.rename", "os.remove", "os.truncate", "os.chmod"):
+        return False
+    return any(_is_bytecode_path(arg) for arg in args)
+
+
 def _audit(event, args):
     mapped = _SOCKET_EVENTS.get(event)
     if mapped is not None:
@@ -413,7 +503,7 @@ def _audit(event, args):
     # filesystem policy entirely; `_trusted` is not reachable that way.
     trusted = POLICY.trusted
     if event in _WRITE_EVENTS:
-        if trusted is None:
+        if trusted is None and not _is_bytecode(event, args):
             raise Fault("file_write", op=_WRITE_EVENTS[event])
         return
     if event in _READ_EVENTS:
@@ -421,6 +511,9 @@ def _audit(event, args):
             raise Fault("file_read", op=_READ_EVENTS[event])
         return
     if event == "open" and args and trusted is None:
+        # A `.pyc` write is the import machinery finishing its job.
+        if _is_bytecode_path(args[0]):
+            return
         _check_open(args[0], args[1], args[2] if len(args) > 2 else None)
 
 

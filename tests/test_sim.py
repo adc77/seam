@@ -12,6 +12,7 @@ from tests.support import (
     CASE_DIGEST,
     DECLINED,
     GOLDEN_BODY,
+    REPO,
     RUN_DIGEST,
     body_of,
     child_env,
@@ -399,6 +400,114 @@ class ProcessTest(unittest.TestCase):
                         # This one only asks for metadata; blocking the stat is
                         # enough, and the run may still finish normally.
                         self.assertNotIn('"leaked"', blob, name)
+
+    def test_handler_can_import_the_project_its_own_modules(self):
+        """A handler importing its own modules is ordinary product code.
+
+        It must work. The first cut of this policy refused it, because only the
+        interpreter's directories were allowlisted for reads, so a handler doing
+        `import mylib` faulted on the module file. Code directories come from
+        `sys.path` now, which is where a product's modules actually live.
+        """
+        with tempfile.TemporaryDirectory(dir=os.path.dirname(REPO)) as directory:
+            app = os.path.join(directory, "app")
+            os.makedirs(app)
+            with open(os.path.join(app, "productmod.py"), "w", encoding="ascii") as handle:
+                handle.write("def payload():\n    return {'from': 'product'}\n")
+            case = json.loads(open(DECLINED, encoding="utf-8").read())
+            case["name"] = "import-case"
+            case["namespace"] = "sim-import-case"
+            case["arrivals"] = [{"at_ns": 0, "handler": "message", "body": {"sku": "book", "amount": 1}}]
+            case["ports"]["payments"]["replies"] = [
+                {"match": {"$any": True}, "response": {"status": "declined"}}
+            ]
+            case["assertions"] = [
+                {"op": "port_called", "port": "payments", "times": 1, "match": {"from": "product"}}
+            ]
+            case_path = os.path.join(directory, "case.json")
+            write_json(case_path, case)
+            out = os.path.join(directory, "out.json")
+            script = (
+                "import os, sys\n"
+                "sys.path.insert(0, os.environ['APP'])\n"
+                "from seam import Runtime, main\n"
+                "rt = Runtime(namespace='shop')\n"
+                "rt.port('payments', lambda: (lambda request: {'status': 'declined'}))\n"
+                "rt.port('email', lambda: (lambda request: {'status': 'accepted'}))\n"
+                "def message(ctx, body):\n"
+                "    import productmod\n"
+                "    ctx.emit('payments', productmod.payload())\n"
+                "rt.on('message', message)\n"
+                "rt.on('remind', lambda ctx, body: None)\n"
+                "sys.stdout.write('CODE %s\\n' % main(rt))\n"
+            )
+            proc = run_product_case(
+                case_path, "sim-import-case", out, script, extra={"APP": app}
+            )
+            art = loads(open(out, encoding="ascii").read())
+            self.assertIn("CODE 0", proc.stdout, proc.stderr)
+            self.assertEqual(art["status"], "passed", dumps(art)[:400])
+            self.assertEqual(art["port_calls"][0]["request"], {"from": "product"})
+            # The module read is code, so it is not recorded as host state.
+            self.assertIsNone(art.get("fs_reads"))
+
+    def test_system_temp_is_not_allowlisted_for_code(self):
+        """A harness that writes its program into a temp directory would, through
+        `sys.path[0]`, allowlist every file in the system temp area. That is not
+        a code directory, so it is removed."""
+        with tempfile.TemporaryDirectory() as directory:
+            app = os.path.join(directory, "app")
+            os.makedirs(app)
+            case = json.loads(open(DECLINED, encoding="utf-8").read())
+            case["name"] = "temp-case"
+            case["namespace"] = "sim-temp-case"
+            case["arrivals"] = [{"at_ns": 0, "handler": "message", "body": {"sku": "book", "amount": 1}}]
+            case["ports"]["payments"]["replies"] = [
+                {"match": {"$any": True}, "response": {"status": "declined"}}
+            ]
+            case["assertions"] = [{"op": "fault_is", "code": "file_read"}]
+            case_path = os.path.join(directory, "case.json")
+            write_json(case_path, case)
+            out = os.path.join(directory, "out.json")
+            script = (
+                "import os, sys\n"
+                "sys.path.insert(0, os.environ['APP'])\n"
+                "from seam import Runtime, main\n"
+                "rt = Runtime(namespace='shop')\n"
+                "rt.port('payments', lambda: (lambda request: {'status': 'declined'}))\n"
+                "rt.port('email', lambda: (lambda request: {'status': 'accepted'}))\n"
+                "def message(ctx, body):\n"
+                "    ctx.emit('payments', {'line': open(os.environ['SECRET']).readline().strip()})\n"
+                "rt.on('message', message)\n"
+                "rt.on('remind', lambda ctx, body: None)\n"
+                "main(rt)\n"
+            )
+            secret = os.path.join(directory, "secret.txt")
+            with open(secret, "w", encoding="ascii") as handle:
+                handle.write("HOST-SECRET-VALUE\n")
+            proc = run_product_case(
+                case_path,
+                "sim-temp-case",
+                out,
+                script,
+                extra={"APP": app, "SECRET": secret},
+            )
+            art = loads(open(out, encoding="ascii").read())
+            blob = dumps(art) + proc.stdout + proc.stderr
+            self.assertNotIn("HOST-SECRET-VALUE", blob)
+            self.assertEqual(art["fault"]["code"], "file_read")
+
+    def test_bytecode_writes_are_permitted_and_not_an_abuse(self):
+        """Importing writes `.pyc` files. That must not fault, and the exemption
+        must not become a way to write anything else."""
+        from seam.guard import _is_bytecode_path
+
+        self.assertTrue(_is_bytecode_path("/app/__pycache__"))
+        self.assertTrue(_is_bytecode_path("/app/__pycache__/mod.cpython-313.pyc"))
+        self.assertFalse(_is_bytecode_path("/app/data/secret.txt"))
+        self.assertFalse(_is_bytecode_path("/app/__pycache__x/secret.txt"))
+        self.assertFalse(_is_bytecode_path("/etc/hosts"))
+        self.assertFalse(_is_bytecode_path(3))
 
     def test_allowlisted_read_is_recorded_but_not_digested(self):
         """A product declares a fixture path, reads it, and the read shows up as
