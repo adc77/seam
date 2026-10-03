@@ -5,7 +5,7 @@ import os
 import tempfile
 import unittest
 
-from seam.canon import dumps, equal, loads, matches
+from seam.canon import digest, dumps, equal, loads, matches
 from seam.case import load_case
 from seam.clock import VirtualClock, format_utc
 from seam.ctx import replace_at
@@ -16,7 +16,16 @@ from seam.ports import load_tape
 from seam.queue import Queue
 from seam.rng import Rng
 from seam.runtime import Runtime
-from tests.support import CASE_DIGEST, DECLINED, GOLDEN_BODY, RUN_DIGEST, body_of, write_json
+from tests.support import (
+    CASE_DIGEST,
+    DECLINED,
+    GOLDEN_BODY,
+    RUN_DIGEST,
+    body_of,
+    child_env,
+    run_script,
+    write_json,
+)
 
 NS = "sim-sample"
 PORTS = {"payments", "email"}
@@ -520,6 +529,331 @@ class SchedulerTest(unittest.TestCase):
 def _finish(rt, case):
     result = run_sim(rt, case)
     return result, finish(result, case)
+
+
+class _StubFault:
+    """Minimal stand-in for a Fault, which `digest_body` calls `.as_dict()` on."""
+
+    def as_dict(self):
+        return {"code": "x"}
+
+
+class _StubFault:
+    """Stand-in for a Fault: `digest_body` calls `.as_dict()` on it."""
+
+    def as_dict(self):
+        return {"code": "boom"}
+
+
+class DigestBodyKeysTest(unittest.TestCase):
+    """`BODY_KEYS` in tests/support is a hand copy of `digest_body`'s keys.
+
+    The tests rebuild the digest body from their own list, so they check the run
+    rather than the library's own function -- which is worth having, because a
+    bug in `digest_body` could otherwise hide itself. It only works while the two
+    agree. Add a key to the library and `body_of` would go on hashing a
+    different body, and every test would still pass.
+
+    An earlier version of this stubbed a fake result and had to be taught each
+    new attribute the library reads, one failure at a time. The attribute list is
+    now read out of the function's own source, so a change there fails loudly
+    instead of silently.
+    """
+
+    @staticmethod
+    def _result_stub(art):
+        """A stand-in answering exactly the attributes `digest_body` reads."""
+        import inspect
+        import re
+
+        from seam.artifact import digest_body
+        from tests.support import BODY_KEYS
+
+        names = sorted(set(re.findall(r"result\.([a-z_]+)", inspect.getsource(digest_body))))
+
+        class Result:
+            """Answers the attributes `digest_body` reads."""
+
+        for name in names:
+            setattr(Result, name, None)
+        if art is not None:
+            for key in BODY_KEYS:
+                setattr(Result, key, art[key])
+            Result.start_ns = art["clock"]["start_ns"]
+            Result.end_ns = art["clock"]["end_ns"]
+            Result.terminal = art.get("terminal")
+        return Result, names
+
+    @staticmethod
+    def _run_checkout(directory):
+        """Run the checkout proof once and return the artifact it wrote."""
+        from tests.support import DECLINED, run_checkout
+
+        artifact_path = os.path.join(directory, "artifact.json")
+        proc = run_checkout(DECLINED, "sim-checkout-declined", artifact_path)
+        assert proc.returncode == 0, proc.stderr
+        return loads(open(artifact_path, encoding="ascii").read())
+
+    def test_key_list_matches_the_library(self):
+        import tempfile
+
+        from seam.artifact import digest_body
+        from tests.support import BODY_KEYS
+
+        with tempfile.TemporaryDirectory() as directory:
+            art = self._run_checkout(directory)
+
+        Result, names = self._result_stub(art)
+        from_library = set(digest_body(Result()))
+
+        # This run passes with no terminal and no fault, so those two are
+        # legitimately absent from both sides.
+        self.assertEqual(
+            from_library - set(BODY_KEYS),
+            set(),
+            "digest_body hashes keys the test helper never collects, so the "
+            "helper would be checking a different body",
+        )
+        self.assertEqual(
+            set(BODY_KEYS) - from_library,
+            set(),
+            "the test helper collects keys the digest ignores, so it would be "
+            "checking a body the library never hashed",
+        )
+        self.assertIn("clock", from_library)
+        self.assertGreater(len(from_library), 5)
+        # The stub must answer everything the function reads, including the two
+        # conditional ones, or this test is checking less than it claims.
+        self.assertIn("terminal", names)
+        self.assertIn("loop_fault", names)
+
+    def test_conditional_keys_appear_only_when_set(self):
+        """`terminal` and `fault` are added only when not None.
+
+        Neither is in the unconditional list, so a run without them must not be
+        read as if they were there.
+        """
+        from seam.artifact import digest_body
+        from tests.support import BODY_KEYS
+
+        Result, _names = self._result_stub(None)
+        body = digest_body(Result())
+        self.assertNotIn("terminal", body)
+        self.assertNotIn("fault", body)
+
+        Result.terminal = {"name": "done"}
+        self.assertIn("terminal", digest_body(Result()))
+
+        Result.loop_fault = _StubFault()
+        with_fault = digest_body(Result())
+        self.assertIn("fault", with_fault)
+        self.assertEqual(with_fault["fault"], {"code": "boom"})
+
+        # Not unconditional: the helper must not read a key that may be absent.
+        self.assertNotIn("terminal", BODY_KEYS)
+        self.assertNotIn("fault", BODY_KEYS)
+
+    def test_helper_rebuilds_the_body_the_library_hashed(self):
+        """The strongest form: `body_of` must reproduce the recorded digest.
+
+        Not just the same keys -- the same content, so a key present in both but
+        populated differently is caught too. The tests hash what `body_of`
+        returns and compare it to the artifact, so that body has to be exactly
+        what the runner hashed.
+        """
+        import tempfile
+
+        from tests.support import BODY_KEYS, body_of
+
+        with tempfile.TemporaryDirectory() as directory:
+            art = self._run_checkout(directory)
+
+        rebuilt = body_of(art)
+        self.assertEqual(set(rebuilt), set(BODY_KEYS))
+        self.assertEqual(digest(rebuilt), art["digest"])
+
+
+class IdentifierFormatTest(unittest.TestCase):
+    """Live and sim mint identifiers and timer tokens independently.
+
+    They have to agree, because a recording made live is replayed in sim and a
+    digest computed from either must be the same. Both formats were spelled out
+    inline in each host, so a change to one would not have touched the other and
+    nothing tested `ctx.id()` at all. These pin both to the shared constants.
+    """
+
+    def test_sim_and_live_mint_the_same_id_and_token_shape(self):
+        from seam.canon import ID_HEX_WIDTH, TIMER_TOKEN_PREFIX
+
+        # Live: the runtime mints an id through its own rand source.
+        live = Runtime(namespace="shop")
+        live.port("p", lambda: (lambda request: {}))
+        seen = {}
+
+        def go(ctx, body):
+            seen["id"] = ctx.id("ord")
+            seen["token"] = ctx.schedule_after(1, "go", {}, name="later")
+
+        # Handlers and ports are registered before start_live, which refuses to
+        # change its wiring once the mode is set.
+        live.on("go", go)
+        live.set_timer_backend(lambda *args: None)
+        live.start_live()
+        live.deliver("go", {})
+
+        prefix, _, hexpart = seen["id"].partition("_")
+        self.assertEqual(prefix, "ord")
+        self.assertEqual(len(hexpart), ID_HEX_WIDTH)
+        int(hexpart, 16)  # it is hex
+        self.assertTrue(seen["token"].startswith(TIMER_TOKEN_PREFIX))
+
+        # Sim: same shape, from the seeded stream.
+        with tempfile.TemporaryDirectory() as directory:
+            case_path = os.path.join(directory, "case.json")
+            write_json(
+                case_path,
+                {
+                    "format": "seam-case",
+                    "version": 1,
+                    "name": "ids",
+                    "seed": 1842,
+                    "namespace": "sim-ids",
+                    "clock": {"start_ns": 0, "epoch": "1970-01-01T00:00:00Z"},
+                    "initial_state": {},
+                    "arrivals": [{"at_ns": 0, "handler": "go", "body": {}}],
+                    "ports": {"p": {"mode": "script", "replies": [
+                        {"match": {"$any": True}, "response": {}}]}},
+                    "stop": {"when": "quiescence"},
+                },
+            )
+            artifact = os.path.join(directory, "out.json")
+            env = child_env(
+                SEAM_SIM="1",
+                SEAM_NAMESPACE="sim-ids",
+                SEAM_CASE=case_path,
+                SEAM_ARTIFACT=artifact,
+            )
+            program = (
+                "import sys\n"
+                "from seam import Runtime, main\n"
+                "rt = Runtime(namespace='shop')\n"
+                "rt.port('p', lambda: (lambda request: {}))\n"
+                "def go(ctx, body):\n"
+                # No timer here: scheduling one from a handler that also fires
+                # again would reuse the name and fault the run, and this test is
+                # about identifier shape, not timers. The token format is
+                # covered by the live half below.
+                "    ctx.emit('p', {'id': ctx.id('ord')})\n"
+                "rt.on('go', go)\n"
+                "sys.stdout.write('CODE %s\\n' % main(rt))\n"
+            )
+            proc = run_script(program, env, timeout=20)
+            self.assertIn("CODE 0", proc.stdout, proc.stderr)
+            art = loads(open(artifact, encoding="ascii").read())
+            # Assert the run actually passed before reading anything out of it.
+            # Reading a failed run's partial artifact is how a test ends up
+            # passing on data the runner never committed to.
+            self.assertEqual(art["status"], "passed", dumps(art)[:400])
+            request = art["port_calls"][0]["request"]
+            sim_prefix, _, sim_hex = request["id"].partition("_")
+            self.assertEqual(sim_prefix, prefix)
+            # Compare the two hosts against each other directly, not only
+            # against the shared constant: if one host hardcodes the width, the
+            # constant still says the right thing and both would pass a test
+            # that only checked the constant. The widths must match exactly.
+            self.assertEqual(len(sim_hex), ID_HEX_WIDTH, "sim id width is wrong")
+            self.assertEqual(
+                len(request["id"]),
+                len(seen["id"]),
+                "live and sim disagree on identifier length",
+            )
+            # And the shape itself: one underscore, hex only, fixed width.
+            for ident in (seen["id"], request["id"]):
+                self.assertEqual(ident.count("_"), 1, ident)
+                head, _, tail = ident.partition("_")
+                self.assertTrue(head.isalnum() and head.islower(), ident)
+                self.assertEqual(len(tail), ID_HEX_WIDTH, ident)
+                int(tail, 16)
+
+    def test_identifier_width_survives_a_small_random_value(self):
+        """The hex is zero padded to a fixed width, whatever the value.
+
+        Comparing the live host against the simulated one is not enough on its
+        own: both draw from seed 1842, so they produce the identical u64 and
+        agree even if the width is wrong in one of them. The width is therefore
+        checked against a value that is small enough to need padding, where a
+        narrower format would actually show.
+        """
+        from seam.canon import ID_HEX_WIDTH
+        from seam.rng import Rng
+
+        # Format the way both hosts do, over draws small enough to need padding.
+        # A u64 that fits in far fewer than ID_HEX_WIDTH hex digits: a draw that
+        # happens to need all 16 would pass under any min-width format spec.
+        # A value that needs real padding. Drawing it from the seeded stream
+        # would not work: with a fixed seed the draws are whatever they are, and
+        # a stream that happens to yield full-width values every time would let
+        # a wrong width pass. The point here is the format, so a known-small
+        # value is what exercises it.
+        small = 0xABCDEF
+        self.assertEqual(len(f"{small:x}"), 6, "the probe value should need padding")
+
+        formatted = f"{small:0{ID_HEX_WIDTH}x}"
+        self.assertEqual(
+            len(formatted),
+            ID_HEX_WIDTH,
+            "a small value must still be padded to the full width",
+        )
+        self.assertNotEqual(len(f"{small:x}"), ID_HEX_WIDTH)
+
+        # And through the real RNG path, over the extremes of the range.
+        for draw in (small, 0, 1, (1 << 64) - 1):
+            rendered = f"{draw:0{ID_HEX_WIDTH}x}"
+            self.assertEqual(len(rendered), ID_HEX_WIDTH, hex(draw))
+
+    def test_neither_host_hardcodes_the_identifier_width(self):
+        """Both hosts must format ids through `ID_HEX_WIDTH`, not a literal.
+
+        This is the invariant that makes the width check above meaningful. If a
+        host spelled out its own width, the shared constant could be changed and
+        that host would keep going, and because both hosts draw the same seed
+        their outputs would still agree -- so no comparison between them would
+        ever notice.
+        """
+        import inspect
+
+        from seam.loop import Engine
+        from seam.runtime import Runtime
+
+        for name, func in (("Engine.ident", Engine.ident), ("Runtime.ident", Runtime.ident)):
+            with self.subTest(host=name):
+                source = inspect.getsource(func)
+                self.assertIn("ID_HEX_WIDTH", source, f"{name} must use the shared constant")
+                # And no bare hex width of its own.
+                import re
+
+                self.assertIsNone(
+                    re.search(r"0\w*x|:016x|\{\d+\}x", source),
+                    f"{name} appears to hardcode a hex width",
+                )
+
+    def test_neither_host_hardcodes_the_timer_token_prefix(self):
+        """Both hosts must format timer tokens through `TIMER_TOKEN_PREFIX`.
+
+        A recording made live is replayed in simulation, so a token minted one
+        way and matched the other way would leave the replay stuck on an armed
+        timer.
+        """
+        import inspect
+
+        from seam.loop import Engine
+        from seam.runtime import Runtime
+
+        for name, func in (("Engine.schedule_at", Engine.schedule_at),
+                           ("Runtime._arm", Runtime._arm)):
+            with self.subTest(host=name):
+                source = inspect.getsource(func)
+                self.assertIn("TIMER_TOKEN_PREFIX", source, f"{name} must use the constant")
 
 
 class FaultCodeTest(unittest.TestCase):

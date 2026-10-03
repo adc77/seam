@@ -5,7 +5,7 @@ import os
 import re
 from dataclasses import dataclass, field
 
-from seam.canon import UINT64_MAX, digest, loads, walk
+from seam.canon import TIMER_TOKEN_PREFIX, UINT64_MAX, digest, loads, walk
 from seam.errors import Refuse
 from seam.ports import RecordingPort, ScriptPort, load_tape, resolve_tape, validate_match
 
@@ -167,7 +167,7 @@ def _assertion(item):
             _bad()
         if named and (type(item["name"]) is not str or not TERMINAL.match(item["name"])):
             _bad()
-        if tokened and (type(item["token"]) is not str or not item["token"].startswith("t")):
+        if tokened and (type(item["token"]) is not str or not item["token"].startswith(TIMER_TOKEN_PREFIX)):
             _bad()
     elif op == "state_is":
         if keys != {"op", "path", "value"} or type(item["path"]) is not str:

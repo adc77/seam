@@ -101,7 +101,9 @@ def write_artifact(path, obj):
     text = dumps(obj) + "\n"
     data = text.encode("ascii")
     if len(data) > MAX_ARTIFACT:
-        raise OSError("artifact exceeds 32 MiB")
+        # The number comes from the constant, so changing the cap does not leave
+        # a message behind that disagrees with it.
+        raise OSError(f"artifact is {len(data)} bytes, over the {MAX_ARTIFACT} byte limit")
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="ascii", newline="\n") as handle:
         handle.write(text)

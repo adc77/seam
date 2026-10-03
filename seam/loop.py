@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from seam.canon import MAX_STRING, deep_copy, dumps
+from seam.canon import ID_HEX_WIDTH, INT64_MAX, MAX_STRING, TIMER_TOKEN_PREFIX, U64_BYTES, deep_copy, dumps
 from seam.case import TERMINAL
 from seam.clock import VirtualClock, format_utc
 from seam.ctx import Ctx, assert_int, replace_at
@@ -89,7 +89,7 @@ class Engine:
 
         if type(prefix) is not str or not IDENT.match(prefix):
             raise Fault("bad_value")
-        return f"{prefix}_{self.rng.rand_u64():016x}"
+        return f"{prefix}_{self.rng.rand_u64():0{ID_HEX_WIDTH}x}"
 
     @property
     def namespace(self):
@@ -151,7 +151,7 @@ class Engine:
     def schedule_after(self, delay_ns, handler, body, name=None):
         assert_int(delay_ns, minimum=0)
         at = self.clock.t + delay_ns
-        if at > 2**63 - 1:
+        if at > INT64_MAX:
             raise Fault("bad_value")
         return self.schedule_at(at, handler, body, name=name)
 
@@ -169,7 +169,7 @@ class Engine:
                 raise Fault("bad_value")
         body_copy = deep_copy(body)
         self._token_n += 1
-        token = f"t{self._token_n}"
+        token = f"{TIMER_TOKEN_PREFIX}{self._token_n}"
         seq = self.queue.push_timer(at_ns, handler, body_copy, token)
         row = {
             "token": token,

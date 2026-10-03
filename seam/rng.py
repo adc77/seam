@@ -2,10 +2,11 @@
 
 import hashlib
 
+from seam.canon import UINT64_MAX, U64_BYTES
 from seam.errors import Fault
 
 _DOMAIN = b"seam.v1.user"
-_MASK = 2**64
+_MASK = UINT64_MAX + 1
 
 
 class Rng:
@@ -17,7 +18,7 @@ class Rng:
 
     def rand_u64(self):
         raw = hashlib.sha256(
-            _DOMAIN + self.seed.to_bytes(8, "little") + self.counter.to_bytes(8, "little")
+            _DOMAIN + self.seed.to_bytes(U64_BYTES, "little") + self.counter.to_bytes(U64_BYTES, "little")
         ).digest()
         self.counter += 1
         return int.from_bytes(raw[:8], "little")

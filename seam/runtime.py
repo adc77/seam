@@ -4,7 +4,7 @@ import os
 import time
 
 from seam.artifact import refused, write_artifact
-from seam.canon import INT64_MAX, deep_copy
+from seam.canon import ID_HEX_WIDTH, INT64_MAX, TIMER_TOKEN_PREFIX, U64_BYTES, deep_copy
 from seam.case import IDENT, TERMINAL, load_case
 from seam.clock import format_utc
 from seam.ctx import Ctx, assert_int, replace_at
@@ -15,9 +15,30 @@ from seam.loop import run_sim
 
 _CONSUMED = False
 
+#: Environment variables the runner reads. Named once so a typo is one edit
+#: rather than a search, and so `SEAM_SIM` in particular cannot be read two
+#: different ways in two different places.
+ENV_SIM = "SEAM_SIM"
+ENV_CASE = "SEAM_CASE"
+ENV_NAMESPACE = "SEAM_NAMESPACE"
+ENV_ARTIFACT = "SEAM_ARTIFACT"
+ENV_RECORD = "SEAM_RECORD"
+ENV_HASH_SEED = "PYTHONHASHSEED"
+
+
+def _sim_requested():
+    """True when the environment asks for a simulation.
+
+    Only the exact string "1" counts. An earlier version also treated any other
+    non-empty value as a request in `start_live`, which meant `SEAM_SIM=true`
+    made `in_sim()` return False while `start_live` refused, so the two
+    disagreed about the same environment. One rule, read in one place.
+    """
+    return os.environ.get(ENV_SIM) == "1"
+
 
 def in_sim():
-    return os.environ.get("SEAM_SIM") == "1"
+    return _sim_requested()
 
 
 def sim_env(case, namespace, artifact=None, **overrides):
@@ -38,11 +59,11 @@ def sim_env(case, namespace, artifact=None, **overrides):
     iterates a set in a handler should sort it instead.
     """
     env = dict(os.environ)
-    env["SEAM_SIM"] = "1"
-    env["SEAM_CASE"] = case
-    env["SEAM_NAMESPACE"] = namespace
+    env[ENV_SIM] = "1"
+    env[ENV_CASE] = case
+    env[ENV_NAMESPACE] = namespace
     if artifact is not None:
-        env["SEAM_ARTIFACT"] = artifact
+        env[ENV_ARTIFACT] = artifact
     for key, value in overrides.items():
         if value is None:
             env.pop(key, None)
@@ -50,7 +71,7 @@ def sim_env(case, namespace, artifact=None, **overrides):
             env[key] = value
     # After the overrides, so an explicit seed is honoured and an override that
     # clears the key falls back to the pinned default rather than to nothing.
-    env.setdefault("PYTHONHASHSEED", "0")
+    env.setdefault(ENV_HASH_SEED, "0")
     return env
 
 
@@ -123,12 +144,13 @@ class Runtime:
         return self
 
     def start_live(self):
-        sim = os.environ.get("SEAM_SIM")
-        if sim not in (None, "0"):
+        # Any value at all in SEAM_SIM means the caller wanted a simulation, so
+        # a typo like `true` is refused rather than quietly running live.
+        if os.environ.get(ENV_SIM) is not None:
             raise Refuse("bad_env")
-        if os.environ.get("SEAM_CASE"):
+        if os.environ.get(ENV_CASE):
             raise Refuse("bad_env")
-        record = os.environ.get("SEAM_RECORD")
+        record = os.environ.get(ENV_RECORD)
         if record not in (None, "0", "1"):
             raise Refuse("bad_env")
         if self.mode is not None:
@@ -136,7 +158,7 @@ class Runtime:
         if self.namespace.startswith("sim-"):
             raise Refuse("namespace")
         if record == "1":
-            path = os.environ.get("SEAM_ARTIFACT")
+            path = os.environ.get(ENV_ARTIFACT)
             if not path:
                 raise Refuse("bad_env")
             self._record = open(path, "a", encoding="ascii", newline="\n")
@@ -167,7 +189,7 @@ class Runtime:
     def rand_u64(self):
         if self.mode != "live":
             raise Fault("bad_value")
-        return int.from_bytes(os.urandom(8), "little")
+        return int.from_bytes(os.urandom(U64_BYTES), "little")
 
     def rand_below(self, n):
         if self.mode != "live":
@@ -175,12 +197,12 @@ class Runtime:
         # Live draws are OS bytes. The sim stream is the one with a stability promise.
         from seam.rng import Rng
 
-        return Rng(int.from_bytes(os.urandom(8), "little")).rand_below(n)
+        return Rng(int.from_bytes(os.urandom(U64_BYTES), "little")).rand_below(n)
 
     def ident(self, prefix):
         if type(prefix) is not str or not IDENT.match(prefix):
             raise Fault("bad_value")
-        return f"{prefix}_{self.rand_u64():016x}"
+        return f"{prefix}_{self.rand_u64():0{ID_HEX_WIDTH}x}"
 
     def emit(self, port, request):
         if self.mode != "live" or self._depth == 0:
@@ -240,7 +262,7 @@ class Runtime:
         if name is not None and (type(name) is not str or not TERMINAL.match(name)):
             raise Fault("bad_value")
         self._token_n += 1
-        token = f"t{self._token_n}"
+        token = f"{TIMER_TOKEN_PREFIX}{self._token_n}"
         self._live_timers[token] = "armed"
         self._timer_backend(token, at_ns, handler, deep_copy(body), name)
         return token
@@ -281,7 +303,7 @@ class Runtime:
 
 
 def _artifact_path():
-    return os.environ.get("SEAM_ARTIFACT") or os.path.join(os.getcwd(), "seam-artifact.json")
+    return os.environ.get(ENV_ARTIFACT) or os.path.join(os.getcwd(), "seam-artifact.json")
 
 
 def _emit(path, obj):
@@ -292,14 +314,14 @@ def _emit(path, obj):
 
 
 def _require_sim():
-    if os.environ.get("SEAM_SIM") != "1":
+    if not _sim_requested():
         raise Refuse("bad_env")
     if "SEAM_RECORD" in os.environ:
         raise Refuse("bad_env")
     if "SEAM_NAMESPACE" not in os.environ or "SEAM_CASE" not in os.environ:
         raise Refuse("bad_env")
-    namespace = os.environ.get("SEAM_NAMESPACE")
-    case = os.environ.get("SEAM_CASE")
+    namespace = os.environ.get(ENV_NAMESPACE)
+    case = os.environ.get(ENV_CASE)
     if namespace == "" or case == "":
         raise Refuse("bad_env")
     return namespace, case

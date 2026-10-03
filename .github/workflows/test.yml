@@ -16,10 +16,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.13 is the floor seam claims in pyproject and the oldest CI runner.
-        # 3.14 is what the library is developed against.
+        # pyproject claims requires-python >=3.11, so 3.11 is tested here. The
+        # guard leans on audit-event names, and those have shifted between
+        # versions before, so an untested floor is an unverified claim rather
+        # than a safe one. 3.14 is what the library is developed against.
         os: [ubuntu-latest, macos-latest]
-        python: ["3.13", "3.14"]
+        python: ["3.11", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
 

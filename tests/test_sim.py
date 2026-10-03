@@ -3,6 +3,9 @@
 import json
 import os
 import stat
+
+import seam
+from seam.artifact import ARTIFACT_MODE
 import tempfile
 import unittest
 
@@ -54,11 +57,11 @@ class ProcessTest(unittest.TestCase):
             data = open(first, "rb").read()
             self.assertTrue(data.endswith(b"\n"))
             self.assertEqual(data.count(b"\n"), 1)
-            self.assertEqual(stat.S_IMODE(os.stat(first).st_mode), 0o644)
+            self.assertEqual(stat.S_IMODE(os.stat(first).st_mode), ARTIFACT_MODE)
             art = loads(data.decode("ascii"))
             self.assertEqual(art["digest"], RUN_DIGEST)
             self.assertEqual(art["case_digest"], CASE_DIGEST)
-            self.assertEqual(art["package_version"], "0.1.0")
+            self.assertEqual(art["package_version"], seam.__version__)
             self.assertEqual(art["status"], "passed")
             self.assertEqual(dumps(body_of(art)), GOLDEN_BODY)
             other = run_checkout(DECLINED, "sim-checkout-declined", second)
