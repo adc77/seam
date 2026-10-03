@@ -144,9 +144,15 @@ class Runtime:
         return self
 
     def start_live(self):
-        # Any value at all in SEAM_SIM means the caller wanted a simulation, so
-        # a typo like `true` is refused rather than quietly running live.
-        if os.environ.get(ENV_SIM) is not None:
+        # Only the exact string "1" asks for a simulation, and only the exact
+        # strings "0" and "" say "definitely not". Anything else non-empty --
+        # `true`, `yes`, a typo -- is refused rather than quietly running live,
+        # because a caller who meant to simulate and misspelled it would
+        # otherwise get a live run and no error. An earlier version refused on
+        # any value at all, including "0", which contradicted `in_sim()`: that
+        # reports False for "0" while this refused, so the same environment got
+        # two different answers. One rule, one place.
+        if os.environ.get(ENV_SIM) not in (None, "", "0"):
             raise Refuse("bad_env")
         if os.environ.get(ENV_CASE):
             raise Refuse("bad_env")

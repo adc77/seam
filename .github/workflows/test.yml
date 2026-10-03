@@ -62,9 +62,23 @@ jobs:
           python -m pip install --upgrade pip build
           python -m build --wheel --outdir "$RUNNER_TEMP/dist"
           python -m pip install --force-reinstall "$RUNNER_TEMP"/dist/*.whl
-          python -c "import seam; print('installed seam', seam.__version__)"
+          # These run from a neutral directory on purpose. From the repository
+          # root the checkout shadows site-packages, so `import seam` resolves to
+          # the working tree and the step passes without ever exercising the
+          # wheel it just built. `cd "$RUNNER_TEMP"` makes it test the artifact.
+          cd "$RUNNER_TEMP"
+          python -c "import seam; print('installed seam', seam.__version__, seam.__file__)"
           python -c "import seam.proof.checkout as p; print('proof packaged', p.__name__)"
-          python -c "import pathlib, seam; d=pathlib.Path(seam.__file__).parent; print([p.name for p in (d/'proof'/'checkout'/'cases').iterdir()])"
+          python -c "import pathlib, seam; d=pathlib.Path(seam.__file__).parent; print(sorted(p.name for p in (d/'proof'/'checkout'/'cases').iterdir()))"
+          # And prove it really is the installed copy, not the checkout.
+          python - <<'PY'
+          import pathlib
+          import seam
+          resolved = pathlib.Path(seam.__file__).resolve()
+          if "site-packages" not in resolved.parts:
+              raise SystemExit(f"seam resolved to the working tree: {resolved}")
+          print("seam resolved to:", resolved)
+          PY
 
   guard:
     name: guard closes on ${{ matrix.os }}
@@ -108,7 +122,30 @@ jobs:
               subprocess.run(["/bin/echo", "x"], capture_output=True)
           except Exception:
               pass
+          # The process-creating events seam blocks. Asserted because a suite
+          # that passes on a platform where an event never fires is a false
+          # green: `_FORK_EVENTS` would list a name CPython does not raise and
+          # nothing would notice. `os.exec` is deliberately not here -- see the
+          # comment on `_FORK_EVENTS` -- and `os.posix_spawnp` is not here
+          # because it raises `os.posix_spawn`.
+          try:
+              if hasattr(os, "fork"):
+                  pid = os.fork()
+                  if pid == 0:
+                      os._exit(0)
+                  os.waitpid(pid, 0)
+          except Exception:
+              pass
+          try:
+              os.posix_spawn(sys.executable, [sys.executable, "-c", "pass"], {})
+          except Exception:
+              pass
+          try:
+              os.system("true")
+          except Exception:
+              pass
           required = ["open", "os.listdir", "os.scandir", "ctypes.dlopen", "subprocess.Popen"]
+          required += ["os.fork", "os.posix_spawn", "os.system"]
           missing = [event for event in required if event not in seen]
           print("observed:", sorted(seen & set(required)))
           if missing:

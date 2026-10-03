@@ -63,26 +63,23 @@ _WRITE_EVENTS = {
 # guards installed, so `os.fork()` plus `os.execv('/bin/cat', ...)` read the host
 # and reported `passed`. The audit hook is now the only thing standing between a
 # handler and a real shell, so this list is deliberately conservative.
+#: Events that mean a brand-new process, which carries none of these guards.
+#:
+#: Only the names CPython actually raises are listed. The `os.exec*` family is
+#: absent on purpose and not by oversight: those calls raise the bare `os.exec`
+#: event, and CPython also raises `os.exec` for an ordinary `exec()` of Python
+#: objects, so blocking it would break any code that evaluates -- unittest
+#: included. `os.posix_spawnp` raises `os.posix_spawn` rather than its own name.
+#: `os.spawnv` and friends raise `os.fork` on this platform, which is already
+#: here. Listing names that never fire would make this set look like it was
+#: covering more than it does; the CI `guard` job asserts the events that matter
+#: do fire on the runner.
 _FORK_EVENTS = frozenset(
     {
         "os.fork",
         "os.forkpty",
         "os.posix_spawn",
-        "os.posix_spawnp",
-        "os.spawn",
         "os.system",
-        "os.execl",
-        "os.execve",
-        "os.execv",
-        "os.execvp",
-        "os.execvpe",
-        "os.execle",
-        "os.execle",
-        "os.execvpe",
-        "os.spawnv",
-        "os.spawnve",
-        "os.spawnvp",
-        "os.spawnvpe",
     }
 )
 _READ_EVENTS = {
@@ -186,11 +183,23 @@ class Policy:
     handler could call `allow_read` on itself and read the host filesystem,
     and the run would still report `passed`. That was a real hole, found by
     probing the public API rather than by reading the code.
+
+    Registration closes here -- but closing a door is not the same as making the
+    hinges unreachable. This object was a module-level singleton whose
+    `read_paths`, `write_paths`, `sealed` and `trusted` were plain writable
+    attributes, so a handler could assign to the state directly and skip every
+    check. `read_paths`/`write_paths` are now read-only views and `trusted` is
+    honoured only for a token this module issued, which closes the one-line
+    bypasses. The private `_read`, `_write` and `_LIVE_TOKENS` are still
+    reachable by code that imports this module, and are part of the trusted
+    surface: see the README. The guard is best-effort, not containment.
     """
 
     def __init__(self):
-        self.write_paths = set()
-        self.read_paths = set()
+        self._write = set()
+        self._read = set()
+        self._write_view = frozenset()
+        self._read_view = frozenset()
         self.reads = set()
         # Resolved at construction, not in reset, so `is_interpreter` is correct
         # before the guards are installed and does not depend on call order.
@@ -200,36 +209,81 @@ class Policy:
         self.sealed = False
         self._resolving = False
         self._in_handler = False
-        #: Sentinel. While a `trusted()` block is active this holds that block's
-        #: token; the audit hook tests it against None, so a handler cannot opt
-        #: itself out by assigning to a public flag. There is deliberately no
-        #: boolean here: an earlier version had one, and a handler set it to
-        #: False and read the host filesystem with the run still passing.
-        self.trusted = None
+        # Set by the `trusted` property; declared here so the attribute exists
+        # before anything reads it.
+        self._trusted = None
+
+    @property
+    def write_paths(self):
+        """Read-only view of the paths a handler may write.
+
+        A property returning a frozenset rather than the live set, so
+        `POLICY.write_paths.add(...)` raises instead of widening the policy. The
+        allowlists were plain public attributes, and a handler could add a host
+        path to one and then read or write it while the run still reported
+        `passed`. The mutable sets are reachable as `_write`/`_read`, which is
+        part of the guard's trusted surface -- see the note on `_LIVE_TOKENS`.
+        """
+        return self._write_view
+
+    @property
+    def read_paths(self):
+        """Read-only view of the paths a handler may read. See `write_paths`."""
+        return self._read_view
+
+    @property
+    def trusted(self):
+        """The token of the innermost active `trusted()` block, or None.
+
+        Assigning to this is deliberately ignored: the audit hook decides
+        whether the policy stands down by asking whether the token is one it
+        issued, so a handler that assigns an arbitrary object here changes
+        nothing.
+        """
+        return self._trusted
+
+    @trusted.setter
+    def trusted(self, value):
+        self._trusted = value
 
     def reset(self, write_paths=(), read_paths=()):
         self._resolving = False
-        self.write_paths = set()
-        self.read_paths = set()
+        self._write = set()
+        self._read = set()
+        self._write_view = frozenset()
+        self._read_view = frozenset()
         # Re-resolved on reset so a process that changes sys.path mid-life
         # (a test harness, an embedded interpreter) still classifies correctly.
         self.interpreter_paths = _interpreter_dirs()
         for path in write_paths:
             normalized = _norm(path)
             if normalized is not None:
-                self.write_paths.add(normalized)
+                self._write.add(normalized)
         for path in read_paths:
             normalized = _norm(path)
             if normalized is not None:
-                self.read_paths.add(normalized)
-        self.write_paths |= self.extra_writes
-        self.read_paths |= self.extra_reads
+                self._read.add(normalized)
+        self._write |= self.extra_writes
+        self._read |= self.extra_reads
         self.reads = set()
         # Registration closes here. From this point on the only code that may
-        # widen the policy is seam itself.
+        # widen the policy is seam itself, and the public views are frozen so a
+        # handler cannot do it through the attribute.
+        self._write_view = frozenset(self._write)
+        self._read_view = frozenset(self._read)
         self.sealed = True
         self._in_handler = False
-        self.trusted = None
+        self._trusted = None
+
+    def grant_read(self, normalized):
+        """Add one already-normalised path to the read policy and its view."""
+        self._read.add(normalized)
+        self._read_view = frozenset(self._read)
+
+    def grant_write(self, normalized):
+        """Add one already-normalised path to the write policy and its view."""
+        self._write.add(normalized)
+        self._write_view = frozenset(self._write)
 
     def is_interpreter(self, real):
         """True when the path belongs to the interpreter's own code."""
@@ -310,6 +364,15 @@ def _abs(path):
 # resolves interpreter paths at construction time.
 POLICY = Policy()
 
+#: Tokens handed out by `trusted()` that are currently in scope. Membership is by
+#: identity, and this set is module-private: the audit hook asks it rather than
+#: reading `POLICY.trusted`, so assigning anything to that attribute cannot
+#: switch the policy off. It exists because the guard is best-effort rather than
+#: a sandbox -- a handler that reaches this object can delete from it, which is
+#: why `Policy` and the guard's internals are documented as part of the trusted
+#: surface rather than presented as an isolation boundary.
+_LIVE_TOKENS = set()
+
 
 #: The real `os.stat`, kept before `install_guards` patches it so seam's own path
 #: resolution can still work. `os.path.realpath` needs a real stat result for
@@ -356,11 +419,18 @@ def trusted():
         raise Fault("file_access", op="file.trusted_in_handler")
     token = object()
     previous = POLICY.trusted
+    # The token is registered in a module-private set as well as stored on the
+    # policy. The audit hook checks membership by identity rather than testing
+    # `POLICY.trusted is not None`, because that test could be satisfied by
+    # assigning any object to the attribute -- which a handler can do, and which
+    # skipped every filesystem check while recording nothing in `fs_reads`.
+    _LIVE_TOKENS.add(token)
     POLICY.trusted = token
     try:
         yield
     finally:
         POLICY.trusted = previous
+        _LIVE_TOKENS.discard(token)
 
 
 @contextlib.contextmanager
@@ -391,7 +461,7 @@ def allow_write(path):
     normalized = _norm(path)
     if normalized is not None:
         POLICY.extra_writes.add(normalized)
-        POLICY.write_paths.add(normalized)
+        POLICY.grant_write(normalized)
 
 
 def allow_read(path):
@@ -404,7 +474,7 @@ def allow_read(path):
     normalized = _norm(path)
     if normalized is not None:
         POLICY.extra_reads.add(normalized)
-        POLICY.read_paths.add(normalized)
+        POLICY.grant_read(normalized)
 
 
 def _clock(op):
@@ -492,14 +562,18 @@ def _check_stat(path, *args, **kwargs):
 
 
 def _is_bytecode_path(path):
-    """True when `path` is inside a `__pycache__` directory.
+    """True when `path` is the `__pycache__` directory itself, or inside it.
 
     A handler importing its own project's modules makes the interpreter write
     `.pyc` files. That is the import machinery, not the product reaching for the
     host, and refusing it would make ordinary product code unusable.
 
-    Only paths inside a `__pycache__` directory qualify, so this grants nothing
-    else: a handler cannot write an arbitrary file by naming one.
+    The path is normalised before the test rather than split on separators. An
+    earlier version looked for `__pycache__` among the literal components, which
+    meant any path of the form `<dir>/__pycache__/../<target>` qualified: the
+    handler got arbitrary read, write and delete while the run still reported
+    `passed`. Normalising collapses the `..` first, so the exemption is decided
+    by where the path actually lands.
     """
     if not isinstance(path, (str, bytes, os.PathLike)):
         return False
@@ -512,10 +586,19 @@ def _is_bytecode_path(path):
         return False
     if not isinstance(path, str):
         return False
-    parts = [part for part in path.replace(os.sep, "/").split("/") if part]
-    # The path itself may be the `__pycache__` directory (mkdir) or a file
-    # inside it (the `.pyc` write), so every component counts.
-    return "__pycache__" in parts
+    real = _norm(path)
+    if real is None:
+        return False
+    # The path may be the directory itself (mkdir) or a file inside it (the
+    # `.pyc` write), so check the basename and then the parent. Testing both
+    # rather than only the parent is what lets a not-yet-created directory
+    # qualify: `realpath` on a path that does not exist still resolves it, but
+    # there is no parent directory to stat for a path like `/app/__pycache__`.
+    name = os.path.basename(real.rstrip(os.sep) or os.sep)
+    if name == "__pycache__":
+        return True
+    parent = os.path.dirname(real)
+    return os.path.basename(parent) == "__pycache__"
 
 
 def _is_bytecode(event, args):
@@ -543,17 +626,19 @@ def _audit(event, args):
     if event in _CTYPES_EVENTS:
         # libc is reachable from here, so real clocks and real syscalls are too.
         raise Fault("real_io", op="ctypes")
-    # Seam's own I/O is the only thing allowed to stand down, and it says so by
-    # holding a trusted token rather than by clearing a flag a handler could
-    # also clear. A handler that set `POLICY.armed = False` used to disable the
-    # filesystem policy entirely; `_trusted` is not reachable that way.
-    trusted = POLICY.trusted
+    # Seam's own I/O is the only thing allowed to stand down. It is recognised by
+    # the *identity* of a token `trusted()` registered, not by `POLICY.trusted`
+    # merely being non-None: a handler could assign any object to that
+    # attribute and skip every filesystem check while recording nothing in
+    # `fs_reads`. An earlier version also had a plain `POLICY.armed` boolean,
+    # which a handler cleared the same way.
+    trusted = POLICY.trusted in _LIVE_TOKENS
     if event in _WRITE_EVENTS:
-        if trusted is None and not _is_bytecode(event, args):
+        if not trusted and not _is_bytecode(event, args):
             raise Fault("file_write", op=_WRITE_EVENTS[event])
         return
     if event in _READ_EVENTS:
-        if trusted is not None:
+        if trusted:
             return
         # Directory listing goes through the same allowlist as `open`. Refusing
         # it outright would make the documented lazy-import promise false: the
@@ -567,7 +652,7 @@ def _audit(event, args):
                 POLICY.note_read(real)
                 return
         raise Fault("file_read", op=_READ_EVENTS[event])
-    if event == "open" and args and trusted is None:
+    if event == "open" and args and not trusted:
         # A `.pyc` write is the import machinery finishing its job.
         if _is_bytecode_path(args[0]):
             return
@@ -652,12 +737,28 @@ def install_guards(*, write_paths=(), read_paths=()):
     def _blocked_method(_self, *_args, **_kwargs):
         raise Fault("unseeded_random", op="random")
 
-    for name in _RANDOM_METHODS:
-        if hasattr(random.Random, name):
-            setattr(random.Random, name, _blocked_method)
+    # `SystemRandom` subclasses `Random` but *overrides* `random`, `getrandbits`,
+    # `randbytes` and `seed` with implementations that read `_urrandom`
+    # directly. Setting the attribute on the parent does not touch an override,
+    # so patching `Random` alone left `SystemRandom` reading OS entropy while
+    # reporting `passed`. Both classes are patched for that reason.
+    for cls in (random.Random, random.SystemRandom):
+        for name in _RANDOM_METHODS + ("seed",):
+            if hasattr(cls, name):
+                setattr(cls, name, _blocked_method)
 
     os.urandom = _random("os.urandom")
-    for name in ("token_bytes", "token_hex", "token_urlsafe", "choice", "randbelow"):
+    # `randbits` is here because `secrets.randbits` is implemented as
+    # `SystemRandom().getrandbits(k)`, so blocking only the token helpers left
+    # the most obvious way to read host entropy open.
+    for name in (
+        "token_bytes",
+        "token_hex",
+        "token_urlsafe",
+        "choice",
+        "randbelow",
+        "randbits",
+    ):
         if hasattr(secrets, name):
             setattr(secrets, name, _random("secrets"))
     uuid.uuid4 = _random("uuid")

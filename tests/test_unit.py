@@ -916,7 +916,9 @@ class GuardPolicyUnitTest(unittest.TestCase):
 
         saved = (
             set(POLICY.read_paths),
+            POLICY._read_view,
             set(POLICY.write_paths),
+            POLICY._write_view,
             set(POLICY.extra_reads),
             set(POLICY.extra_writes),
             POLICY.sealed,
@@ -934,9 +936,13 @@ class GuardPolicyUnitTest(unittest.TestCase):
             # The runner's own artifact path is still there too.
             self.assertIn(artifact, POLICY.write_paths)
         finally:
+            # The public path attributes are read-only views now, so the test
+            # saves and restores the underlying sets.
             (
-                POLICY.read_paths,
-                POLICY.write_paths,
+                POLICY._read,
+                POLICY._read_view,
+                POLICY._write,
+                POLICY._write_view,
                 POLICY.extra_reads,
                 POLICY.extra_writes,
                 POLICY.sealed,
@@ -945,14 +951,14 @@ class GuardPolicyUnitTest(unittest.TestCase):
     def test_paths_are_exact_not_prefixes(self):
         from seam.guard import POLICY, _norm, allow_read
 
-        saved = (set(POLICY.read_paths), set(POLICY.extra_reads), POLICY.sealed)
+        saved = (set(POLICY._read), POLICY._read_view, set(POLICY.extra_reads), POLICY.sealed)
         try:
             allow_read("/tmp/seam-dir")
             # A sibling that merely shares the prefix is not granted.
             self.assertNotIn(_norm("/tmp/seam-dir-other"), POLICY.read_paths)
             self.assertIn(_norm("/tmp/seam-dir"), POLICY.read_paths)
         finally:
-            POLICY.read_paths, POLICY.extra_reads, POLICY.sealed = saved
+            POLICY._read, POLICY._read_view, POLICY.extra_reads, POLICY.sealed = saved
 
     def test_interpreter_reads_are_not_recorded_as_provenance(self):
         import sysconfig

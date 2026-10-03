@@ -44,6 +44,8 @@ The policy **seals** when the guards install. `allow_read`, `allow_write` and `t
 
 **This is not a sandbox.** It refuses the standard-library paths listed above; it does not contain a process. A name bound before `install_guards()` still points at the original object, C extensions can reach libc without going through `ctypes`, and a determined handler can defeat a monkeypatch. Treat the digest as a strong signal for code that follows the rules, not as a security boundary.
 
+Concretely, the guard's own internals — `seam.guard.POLICY` and the private `_read`, `_write`, `_LIVE_TOKENS` behind it — are part of the trusted surface. `read_paths`, `write_paths` and `trusted` are read-only views and cannot be used to widen the policy, which is why they are exposed as properties rather than plain attributes; but code that reaches the private sets can still widen it, and nothing here is designed to stop that. A handler that imports `seam.guard` and mutates `_read` is outside what this library claims to defend.
+
 ### What a handler cannot do
 
 These are consequences of the guard, not oversights. A product that hits them needs a small change, and it is better to know up front:

@@ -41,6 +41,16 @@ def child_env(**values):
     }
     env["PYTHONPATH"] = REPO
     env["PYTHONUNBUFFERED"] = "1"
+    # Pinned so `PYTHONHASHSEED` cannot be inherited from the parent. Without
+    # it, set and dict iteration order varies per process, so a handler that put
+    # `list(set(...))` into a port request produced a different digest on every
+    # replay -- `status: passed` and a moved digest, which is the one failure
+    # this library exists to prevent. `sim_env` does this too, but nothing in
+    # the repo launched a child through it, so the pin is repeated here where
+    # the tests actually build their environments. A caller passing
+    # PYTHONHASHSEED explicitly still wins, which is what the seam suite's own
+    # test of `sim_env` needs.
+    env.setdefault("PYTHONHASHSEED", "0")
     for key, value in values.items():
         if value is None:
             env.pop(key, None)

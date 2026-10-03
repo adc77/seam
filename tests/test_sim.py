@@ -37,6 +37,36 @@ def tearDownModule():
         raise AssertionError("parent clock was patched")
 
 
+def _one_handler_case(namespace, handler, ports=()):
+    """A minimal case with one arrival and the named ports.
+
+    Several guard tests need a runnable case that does nothing but call one
+    handler, so this is shared rather than repeated inline.
+
+    `ports` must match the ports the handler's runtime registers *exactly*: the
+    loader refuses `want - have` as `unknown_port_in_case` and `have - want` as
+    `unscripted_port`. A handler that registers nothing therefore needs a case
+    declaring nothing, which is the default here.
+
+    Returns the case as a dict, for `write_json`.
+    """
+    return {
+        "format": "seam-case",
+        "version": 1,
+        "name": namespace,
+        "seed": 7,
+        "namespace": namespace,
+        "clock": {"start_ns": 0, "epoch": "1970-01-01T00:00:00Z"},
+        "initial_state": {},
+        "arrivals": [{"at_ns": 0, "handler": handler, "body": {}}],
+        "ports": {
+            name: {"mode": "script", "replies": [{"match": {"$any": True}, "response": {}}]}
+            for name in ports
+        },
+        "stop": {"when": "quiescence"},
+    }
+
+
 class ProcessTest(unittest.TestCase):
     def test_declined_file_is_byte_stable(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -405,6 +435,96 @@ class ProcessTest(unittest.TestCase):
                         # enough, and the run may still finish normally.
                         self.assertNotIn('"leaked"', blob, name)
 
+    def test_hash_seed_pinning_survives_a_real_run(self):
+        """A real replay is stable when a handler iterates a set.
+
+        `test_sim_env_pins_the_hash_seed` checks that `sim_env` builds an
+        environment containing `PYTHONHASHSEED`, which is a claim about a dict.
+        This is the claim about a run: a handler that puts `list(set(...))` into
+        a port request, launched through `child_env` the way the rest of the
+        suite launches children, has to produce the same digest every time.
+
+        Before `child_env` pinned the seed, this failed -- five runs, five
+        digests, every one reporting `status: passed`.
+        """
+        import os
+        import tempfile
+
+        from tests.support import child_env, run_script, write_json
+
+        digests = set()
+        statuses = set()
+        for _ in range(5):
+            with tempfile.TemporaryDirectory() as directory:
+                case_path = os.path.join(directory, "case.json")
+                artifact = os.path.join(directory, "out.json")
+                write_json(
+                    case_path,
+                    {
+                        "format": "seam-case",
+                        "version": 1,
+                        "name": "hash-seed",
+                        "seed": 1842,
+                        "namespace": "sim-hash-seed",
+                        "clock": {"start_ns": 0, "epoch": "1970-01-01T00:00:00Z"},
+                        "initial_state": {},
+                        "arrivals": [{"at_ns": 0, "handler": "go", "body": {}}],
+                        "ports": {"p": {"mode": "script", "replies": [
+                            {"match": {"$any": True}, "response": {}}]}},
+                        "stop": {"when": "quiescence"},
+                    },
+                )
+                env = child_env(
+                    SEAM_SIM="1",
+                    SEAM_NAMESPACE="sim-hash-seed",
+                    SEAM_CASE=case_path,
+                    SEAM_ARTIFACT=artifact,
+                )
+                program = (
+                    "import sys\n"
+                    "from seam import Runtime, main\n"
+                    "rt = Runtime(namespace='shop')\n"
+                    "rt.port('p', lambda: (lambda request: {}))\n"
+                    "def go(ctx, body):\n"
+                    # Deliberately unordered: str hashing is salt-randomised, so
+                    # set iteration order differs per process unless the seed is
+                    # pinned for the child.
+                    "    items = list(set(['a','bb','ccc','d','ee','fff',"
+                    "'g','hh','iii','jjj','kkkk','lllll']))\n"
+                    "    ctx.emit('p', {'items': items})\n"
+                    "rt.on('go', go)\n"
+                    "sys.stdout.write('CODE %s\\n' % main(rt))\n"
+                )
+                proc = run_script(program, env, timeout=20)
+                self.assertIn("CODE 0", proc.stdout, proc.stderr)
+                art = loads(open(artifact, encoding="ascii").read())
+                self.assertEqual(art["status"], "passed", dumps(art)[:300])
+                digests.add(art["digest"])
+                statuses.add(art["status"])
+
+        self.assertEqual(
+            len(digests),
+            1,
+            f"digest moved across runs with the seed pinned: {sorted(digests)}",
+        )
+        self.assertEqual(statuses, {"passed"})
+
+    def test_child_env_pins_the_hash_seed(self):
+        """`child_env` must not inherit the parent's hash seed.
+
+        The parent process's own seed is fixed at startup and cannot be changed,
+        so the only way to give a child a stable one is to set it in the
+        environment that launches it. That makes this the single point where
+        every test child gets the pin.
+        """
+        from tests.support import child_env
+
+        self.assertEqual(child_env()["PYTHONHASHSEED"], "0")
+        # An explicit value still wins, so a test can choose a different seed.
+        self.assertEqual(child_env(PYTHONHASHSEED="7")["PYTHONHASHSEED"], "7")
+        # And it does not leak a SEAM_ variable while it is at it.
+        self.assertNotIn("SEAM_CASE", child_env())
+
     def test_sim_env_pins_the_hash_seed(self):
         """Set iteration order must not change the digest.
 
@@ -743,6 +863,354 @@ class ProcessTest(unittest.TestCase):
         self.assertFalse(_is_bytecode_path("/app/__pycache__x/secret.txt"))
         self.assertFalse(_is_bytecode_path("/etc/hosts"))
         self.assertFalse(_is_bytecode_path(3))
+
+    def test_a_pycache_component_cannot_smuggle_a_path(self):
+        """`__pycache__/..` must not qualify.
+
+        The exemption used to test whether `__pycache__` appeared among the
+        literal path components, without normalising first. Any path of the form
+        `<dir>/__pycache__/../<target>` therefore qualified, and a handler got
+        arbitrary read, write and delete of anything the process could reach,
+        with the run still reporting `passed`.
+
+        These are unit assertions on the predicate; `test_a_handler_cannot_reach
+        _the_host_through_a_pycache_component` runs the whole thing.
+        """
+        from seam.guard import _is_bytecode_path
+
+        for target in ("secret.txt", "..", "..", "etc", "hosts"):
+            self.assertFalse(
+                _is_bytecode_path(f"/app/__pycache__/../{target}"),
+                f"/app/__pycache__/../{target} must not be exempt",
+            )
+        # And the shape that genuinely is bytecode still is.
+        self.assertTrue(_is_bytecode_path("/app/pkg/__pycache__/m.cpython-313.pyc"))
+        # A traversal that lands back inside a real __pycache__ is still allowed,
+        # because that is where it ends up.
+        self.assertTrue(_is_bytecode_path("/app/__pycache__/../pkg/__pycache__/m.pyc"))
+
+    def test_a_handler_cannot_reach_the_host_through_a_pycache_component(self):
+        """End to end: read, overwrite and delete through `<dir>/__pycache__/..`.
+
+        Each of these reported `passed` while the victim file was read,
+        overwritten or removed.
+        """
+        victim_value = "TOPSECRET-VALUE-12345678"
+        # Each predicate returns True when the victim was left *intact*, which
+        # is the outcome a refused handler must produce. For `read` the file is
+        # never the thing that changes; what must not happen is the secret
+        # reaching the artifact, and that is asserted below via status/fault.
+        for action, intact in (
+            ("read", lambda v: open(v, encoding="ascii").read() == victim_value),
+            ("write", lambda v: open(v, encoding="ascii").read() == victim_value),
+            ("delete", lambda v: os.path.exists(v)),
+        ):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as directory:
+                victim = os.path.join(directory, "secret.txt")
+                with open(victim, "w", encoding="ascii") as handle:
+                    handle.write(victim_value)
+                os.makedirs(os.path.join(directory, "__pycache__"), exist_ok=True)
+                poison = os.path.join(directory, "__pycache__", "..", "secret.txt")
+
+                case = os.path.join(directory, "case.json")
+                with open(case, "w", encoding="ascii") as handle:
+                    json.dump(
+                        {
+                            "format": "seam-case",
+                            "version": 1,
+                            "name": "poison",
+                            "seed": 7,
+                            "namespace": "sim-poison",
+                            "clock": {"start_ns": 0, "epoch": "1970-01-01T00:00:00Z"},
+                            "initial_state": {},
+                            "arrivals": [{"at_ns": 0, "handler": "go", "body": {}}],
+                            "ports": {},
+                            "stop": {"when": "quiescence"},
+                        },
+                        handle,
+                    )
+                out = os.path.join(directory, "out.json")
+                script = (
+                    "import os, sys\n"
+                    "from seam import Runtime, main\n"
+                    "rt = Runtime(namespace='shop')\n"
+                    f"POISON = {poison!r}\n"
+                    "def go(ctx, body):\n"
+                    "    if body.get('action') == 'read':\n"
+                    "        ctx.state['v'] = open(POISON, encoding='ascii').read()\n"
+                    "    elif body.get('action') == 'write':\n"
+                    "        open(POISON, 'w', encoding='ascii').write('CLOBBERED')\n"
+                    "    else:\n"
+                    "        os.remove(POISON)\n"
+                    "rt.on('go', go)\n"
+                    "main(rt)\n"
+                )
+                case_body = json.load(open(case, encoding="ascii"))
+                case_body["arrivals"][0]["body"] = {"action": action}
+                with open(case, "w", encoding="ascii") as handle:
+                    json.dump(case_body, handle)
+
+                proc = run_script(
+                    script,
+                    child_env(
+                        SEAM_SIM="1",
+                        SEAM_NAMESPACE="sim-poison",
+                        SEAM_CASE=case,
+                        SEAM_ARTIFACT=out,
+                    ),
+                    timeout=20,
+                )
+                art = loads(open(out, encoding="ascii").read())
+                self.assertNotEqual(
+                    art["status"],
+                    "passed",
+                    f"{action} through __pycache__/.. still reports passed: {proc.stderr}",
+                )
+                self.assertIn(
+                    (art.get("fault") or {}).get("code"),
+                    ("file_read", "file_write", "file_access"),
+                    f"{action}: wrong fault {art.get('fault')}",
+                )
+                self.assertTrue(
+                    intact(victim),
+                    f"{action}: the victim file was modified even though the run faulted",
+                )
+                # And the secret never reached the artifact.
+                self.assertNotIn(
+                    "TOPSECRET", dumps(art), f"{action}: the secret reached the artifact"
+                )
+
+    def test_systemrandom_and_secrets_randbits_are_blocked(self):
+        """`SystemRandom` and `secrets.randbits` must not read host entropy.
+
+        `SystemRandom` subclasses `Random` but overrides `random`,
+        `getrandbits`, `randbytes` and `seed` with its own implementations, so
+        patching `Random` alone left it reading `_urandom` and the run still
+        reported `passed`. `secrets.randbits` is `SystemRandom().getrandbits(k)`,
+        so blocking only the token helpers left the most obvious way to read OS
+        entropy open.
+
+        Both produced a *different digest on every replay* before this was
+        fixed, which is the single failure this library exists to prevent.
+        """
+        sources = [
+            "random.SystemRandom().getrandbits(64)",
+            "random.SystemRandom().random()",
+            "random.SystemRandom().randbytes(8).hex()",
+            "random.Random(1).getrandbits(64)",
+            "secrets.randbits(64)",
+            "secrets.randbelow(64)",
+            "secrets.token_bytes(8).hex()",
+            "os.urandom(8).hex()",
+            "uuid.uuid4().hex",
+        ]
+        for source in sources:
+            with self.subTest(source=source):
+                with tempfile.TemporaryDirectory() as directory:
+                    out = os.path.join(directory, "out.json")
+                    case = os.path.join(directory, "case.json")
+                    write_json(case, _one_handler_case("sim-entropy", "go"))
+                    script = (
+                        "import os, random, secrets, sys, uuid\n"
+                        "from seam import Runtime, main\n"
+                        "rt = Runtime(namespace='shop')\n"
+                        "def go(ctx, body):\n"
+                        f"    ctx.state['v'] = repr({source})\n"
+                        "rt.on('go', go)\n"
+                        "sys.stdout.write('CODE %s\\n' % main(rt))\n"
+                    )
+                    proc = run_script(
+                        script,
+                        child_env(
+                            SEAM_SIM="1",
+                            SEAM_NAMESPACE="sim-entropy",
+                            SEAM_CASE=case,
+                            SEAM_ARTIFACT=out,
+                        ),
+                        timeout=20,
+                    )
+                    self.assertIn("CODE", proc.stdout, proc.stderr)
+                    art = loads(open(out, encoding="ascii").read())
+                    self.assertEqual(
+                        (art.get("fault") or {}).get("code"),
+                        "unseeded_random",
+                        f"{source} was not blocked: {art.get('status')} {art.get('fault')}",
+                    )
+                    self.assertNotEqual(art["status"], "passed", source)
+
+    def test_entropy_sources_are_stable_across_replays(self):
+        """The property itself: the same run must give the same digest.
+
+        The test above asserts each source is refused. This one asserts the
+        guarantee that motivated refusing them, so a future change that let one
+        through without an obvious fault code still gets caught.
+        """
+        digests = set()
+        for index in range(3):
+            with tempfile.TemporaryDirectory() as directory:
+                out = os.path.join(directory, "out.json")
+                case = os.path.join(directory, "case.json")
+                write_json(case, _one_handler_case("sim-entropy-stable", "go"))
+                script = (
+                    "import secrets, sys\n"
+                    "from seam import Runtime, main\n"
+                    "rt = Runtime(namespace='shop')\n"
+                    "def go(ctx, body):\n"
+                    "    ctx.state['v'] = repr(secrets.randbits(64))\n"
+                    "rt.on('go', go)\n"
+                    "sys.stdout.write('CODE %s\\n' % main(rt))\n"
+                )
+                run_script(
+                    script,
+                    child_env(
+                        SEAM_SIM="1",
+                        SEAM_NAMESPACE="sim-entropy-stable",
+                        SEAM_CASE=case,
+                        SEAM_ARTIFACT=out,
+                    ),
+                    timeout=20,
+                )
+                art = loads(open(out, encoding="ascii").read())
+                digests.add(art["digest"])
+        self.assertEqual(len(digests), 1, f"digest moved across replays: {sorted(digests)}")
+
+    def test_handler_cannot_widen_the_policy_by_assigning_to_it(self):
+        """The policy's public surface must not be a way to widen it.
+
+        `Policy` exposed `read_paths`, `write_paths`, `sealed`, `trusted` and
+        `_in_handler` as plain writable attributes on a module-level singleton.
+        Sealing `allow_read` therefore guarded nothing: a handler could assign to
+        the state directly. `POLICY.trusted = object()` was the worst of these,
+        because the audit hook tested `trusted is not None`, so it skipped every
+        filesystem check *and* recorded nothing in `fs_reads`.
+
+        Every realpath below is computed at wiring time, before the run. An
+        earlier version of this test called `os.path.realpath` inside the
+        handler, which stats every component and dies of `file_read` there, so
+        the attempts passed for the wrong reason and proved nothing.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            secret = os.path.join(directory, "secret.txt")
+            with open(secret, "w", encoding="ascii") as handle:
+                handle.write("TOPSECRET-VALUE-12345678")
+            # Resolved out here, in the parent, where stat is not guarded.
+            real = os.path.realpath(secret)
+
+            attempts = [
+                f"POLICY.read_paths.add({real!r})",
+                f"POLICY.write_paths.add({real!r})",
+                "POLICY.sealed = False",
+                "POLICY._in_handler = False",
+                "POLICY.trusted = object()",
+                f"POLICY._read.add({real!r})",
+            ]
+            for attempt in attempts:
+                with self.subTest(attempt=attempt):
+                    out = os.path.join(directory, "out.json")
+                    case = os.path.join(directory, "case.json")
+                    write_json(
+                        case,
+                        {
+                            "format": "seam-case",
+                            "version": 1,
+                            "name": "policy",
+                            "seed": 7,
+                            "namespace": "sim-policy",
+                            "clock": {"start_ns": 0, "epoch": "1970-01-01T00:00:00Z"},
+                            "initial_state": {},
+                            "arrivals": [{"at_ns": 0, "handler": "go", "body": {}}],
+                            "ports": {"p": {"mode": "script", "replies": [
+                                {"match": {"$any": True}, "response": {}}]}},
+                            "stop": {"when": "quiescence"},
+                        },
+                    )
+                    script = (
+                        "import sys\n"
+                        "from seam import Runtime, main\n"
+                        "from seam.guard import POLICY\n"
+                        "rt = Runtime(namespace='shop')\n"
+                        "rt.port('p', lambda: (lambda request: {}))\n"
+                        "def go(ctx, body):\n"
+                        f"    {attempt}\n"
+                        f"    ctx.emit('p', {{'v': open({real!r}, encoding='ascii').read()}})\n"
+                        "rt.on('go', go)\n"
+                        "sys.stdout.write('CODE %s\\n' % main(rt))\n"
+                    )
+                    run_script(
+                        script,
+                        child_env(
+                            SEAM_SIM="1",
+                            SEAM_NAMESPACE="sim-policy",
+                            SEAM_CASE=case,
+                            SEAM_ARTIFACT=out,
+                        ),
+                        timeout=20,
+                    )
+                    art = loads(open(out, encoding="ascii").read())
+                    self.assertNotIn(
+                        "TOPSECRET",
+                        dumps(art),
+                        f"{attempt} read the secret into the artifact",
+                    )
+                    self.assertNotEqual(
+                        art["status"], "passed", f"{attempt} still reported passed"
+                    )
+
+    def test_policy_path_attributes_cannot_be_mutated(self):
+        """`read_paths` and `write_paths` are read-only views.
+
+        A frozenset rather than the live set, so `POLICY.read_paths.add(...)`
+        raises instead of widening the policy. Asserted directly so the property
+        is part of the contract rather than a side effect of the end-to-end test.
+        """
+        from seam.guard import POLICY
+
+        self.assertIsInstance(POLICY.read_paths, frozenset)
+        self.assertIsInstance(POLICY.write_paths, frozenset)
+        with self.assertRaises(AttributeError):
+            POLICY.read_paths.add("/tmp/anything")
+        with self.assertRaises(AttributeError):
+            POLICY.write_paths.add("/tmp/anything")
+
+    def test_trusted_is_recognised_only_by_token_identity(self):
+        """Assigning to `POLICY.trusted` must not stand the policy down.
+
+        The audit hook decides whether to skip its checks by asking whether the
+        token is one `trusted()` issued. The version before this kept the token
+        on the attribute alone and tested `trusted is not None`, which any
+        assignment satisfies -- a handler set `POLICY.trusted = object()` and
+        every filesystem check was skipped while nothing was recorded in
+        `fs_reads`.
+
+        The assertion is on the hook's actual decision rather than on the
+        membership set. Asserting the set directly would pass under both
+        variants, because `trusted()` registers its token either way, so it
+        would say nothing about whether the forgery works.
+        """
+        from seam.errors import Fault
+        from seam.guard import POLICY, _LIVE_TOKENS, _audit, trusted
+
+        saved = POLICY.trusted
+        target = "/etc/hosts"
+        try:
+            POLICY.trusted = object()
+            self.assertNotIn(POLICY.trusted, _LIVE_TOKENS)
+            # The forged token must not let a read through.
+            with self.assertRaises(Fault) as caught:
+                _audit("open", (target, "r", -1))
+            self.assertEqual(caught.exception.code, "file_read")
+
+            # seam's own I/O still works, because it registers a real token.
+            with trusted():
+                self.assertIn(POLICY.trusted, _LIVE_TOKENS)
+            # And the token is dropped on exit, so it cannot be reused later.
+            self.assertNotIn(POLICY.trusted, _LIVE_TOKENS)
+        finally:
+            POLICY.trusted = saved
+
+        # And once no block is active, a read is refused again.
+        with self.assertRaises(Fault):
+            _audit("open", (target, "r", -1))
 
     def test_allowlisted_read_is_recorded_but_not_digested(self):
         """A product declares a fixture path, reads it, and the read shows up as
