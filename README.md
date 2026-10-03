@@ -59,7 +59,7 @@ The pattern that avoids all of this: a handler should take time, randomness, ids
 
 ## Adopting it
 
-Wrap the product's outside world in ports and route its messages through handlers. Then the same code runs live or simulated with no branching in the product:
+Wrap the product's outside world into ports and route its messages through handlers. Then the same code runs live or simulated with no branching in the product:
 
 ```python
 from seam import Runtime
@@ -69,5 +69,17 @@ rt.port("payments", make_payments_client)   # called only in live mode
 rt.on("message", on_message)
 rt.start_live()                              # or seam.main(rt) under SEAM_SIM=1
 ```
+
+Launch a simulation through `sim_env`, which pins `PYTHONHASHSEED`:
+
+```python
+import subprocess, sys
+from seam import sim_env
+
+env = sim_env("case.json", "sim-shop", "out.json")
+subprocess.run([sys.executable, "-m", "myproduct"], env=env)
+```
+
+This matters: string hashing is salted per interpreter, so iterating a `set` in a handler gives a different order in every process. That changed the run digest on every replay while the run still reported `passed`. The salt is chosen at start-up and cannot be fixed from inside the process, which is why it belongs to the launcher.
 
 The checkout proof in `seam/proof/checkout/` is a complete worked example. Its three cases and the artifact digests are pinned in the suite, so it doubles as a regression test of the format itself.

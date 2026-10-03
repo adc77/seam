@@ -20,6 +20,40 @@ def in_sim():
     return os.environ.get("SEAM_SIM") == "1"
 
 
+def sim_env(case, namespace, artifact=None, **overrides):
+    """The environment for one simulation process, with `PYTHONHASHSEED` pinned.
+
+    String hashing is salted per interpreter, so `for x in {"a", "b", "c"}`
+    iterates in a different order in every process. A handler that puts a set
+    into a port request therefore produced a different digest on every replay
+    while the run still reported `passed`. The salt is chosen at interpreter
+    start-up, so it cannot be fixed from inside the process; it has to be set
+    before the child is launched. Launch the run with this environment:
+
+        env = sim_env("case.json", "sim-shop", "out.json")
+        subprocess.run([sys.executable, "-m", "myproduct"], env=env)
+
+    An existing `PYTHONHASHSEED` is respected, so a caller can pin a different
+    seed deliberately. In-process use cannot be fixed this way; a run that
+    iterates a set in a handler should sort it instead.
+    """
+    env = dict(os.environ)
+    env["SEAM_SIM"] = "1"
+    env["SEAM_CASE"] = case
+    env["SEAM_NAMESPACE"] = namespace
+    if artifact is not None:
+        env["SEAM_ARTIFACT"] = artifact
+    for key, value in overrides.items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+    # After the overrides, so an explicit seed is honoured and an override that
+    # clears the key falls back to the pinned default rather than to nothing.
+    env.setdefault("PYTHONHASHSEED", "0")
+    return env
+
+
 class Factory:
     """The object the runtime registered. In sim, calling it does not call the user's factory."""
 

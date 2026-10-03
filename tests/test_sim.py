@@ -8,6 +8,7 @@ import unittest
 
 from seam.canon import digest, dumps, loads
 from seam.proof.checkout import CASE_DIR
+from seam.runtime import sim_env
 from tests.support import (
     CASE_DIGEST,
     DECLINED,
@@ -400,6 +401,61 @@ class ProcessTest(unittest.TestCase):
                         # This one only asks for metadata; blocking the stat is
                         # enough, and the run may still finish normally.
                         self.assertNotIn('"leaked"', blob, name)
+
+    def test_sim_env_pins_the_hash_seed(self):
+        """Set iteration order must not change the digest.
+
+        String hashing is salted per interpreter, so `list({"a", "b"})` came out
+        in a different order in every process and the digest changed with it,
+        while the run still reported `passed`. The salt is fixed at start-up, so
+        `sim_env` sets it for the child rather than the process trying to fix it
+        from inside.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            env = sim_env("case.json", "sim-shop", "out.json", PYTHONHASHSEED=None)
+            self.assertEqual(env["SEAM_SIM"], "1")
+            self.assertEqual(env["SEAM_CASE"], "case.json")
+            self.assertEqual(env["SEAM_NAMESPACE"], "sim-shop")
+            self.assertEqual(env["SEAM_ARTIFACT"], "out.json")
+            # A cleared key falls back to the pinned default.
+            self.assertEqual(env["PYTHONHASHSEED"], "0")
+            # An explicit seed is respected rather than overwritten.
+            self.assertEqual(
+                sim_env("c", "n", PYTHONHASHSEED="7")["PYTHONHASHSEED"], "7"
+            )
+            # Other overrides pass through, and None removes the key.
+            self.assertEqual(sim_env("c", "n", SEED_PIN="x")["SEED_PIN"], "x")
+            self.assertNotIn("SEED_PIN", sim_env("c", "n", SEED_PIN=None))
+
+            case = json.loads(open(DECLINED, encoding="utf-8").read())
+            case["name"] = "set-case"
+            case["namespace"] = "sim-set-case"
+            case["arrivals"] = [{"at_ns": 0, "handler": "message", "body": {"sku": "book", "amount": 1}}]
+            case["ports"]["payments"]["replies"] = [
+                {"match": {"$any": True}, "response": {"status": "declined"}}
+            ]
+            case["assertions"] = []
+            case_path = os.path.join(directory, "case.json")
+            write_json(case_path, case)
+            program = (
+                "import sys\n"
+                "from seam import Runtime, main\n"
+                "rt = Runtime(namespace='shop')\n"
+                "rt.port('payments', lambda: (lambda request: {'status': 'declined'}))\n"
+                "rt.port('email', lambda: (lambda request: {'status': 'accepted'}))\n"
+                "def message(ctx, body):\n"
+                "    ctx.emit('payments', {'order': list({'charlie','echo','foxtrot','alpha'})})\n"
+                "rt.on('message', message)\n"
+                "rt.on('remind', lambda ctx, body: None)\n"
+                "main(rt)\n"
+            )
+            digests = []
+            for index in (1, 2, 3):
+                out = os.path.join(directory, f"out{index}.json")
+                env = sim_env(case_path, "sim-set-case", out, PYTHONPATH=REPO)
+                run_proc([sys.executable, "-c", program], env, timeout=30)
+                digests.append(loads(open(out, encoding="ascii").read())["digest"])
+            self.assertEqual(len(set(digests)), 1, digests)
 
     def test_handler_cannot_reach_a_shell_by_forking(self):
         """The widest hole in the guard, and it reported `passed`.
