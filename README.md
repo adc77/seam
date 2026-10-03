@@ -53,6 +53,7 @@ These are consequences of the guard, not oversights. A product that hits them ne
 - **Write a file from a handler**, unless the path is passed to `allow_write` before the run.
 - **Import inside a handler and expect the import's own side effects to be visible.** Imports are allowed, but a module that reads the clock or the filesystem at import time will fault, which is the guard working as intended.
 - **Start a thread**, or call a live factory in sim mode. Both fault.
+- **Call `os.execv` directly.** Blocking `os.fork` is what stops a handler reaching a shell, and it works. But `os.execv` fires only CPython's bare `exec` audit event, which is indistinguishable from the ordinary `exec()` of a Python object — blocking it would break any code that evaluates, including `unittest` itself. A handler that replaces its own process with another one is therefore the one escape this guard cannot close from inside the process. A product would not do this; a determined one could.
 
 The pattern that avoids all of this: a handler should take time, randomness, ids and side effects from `ctx` and its ports. That is the design, and the guard exists to keep a product honest to it.
 

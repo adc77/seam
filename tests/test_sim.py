@@ -401,6 +401,182 @@ class ProcessTest(unittest.TestCase):
                         # enough, and the run may still finish normally.
                         self.assertNotIn('"leaked"', blob, name)
 
+    def test_handler_cannot_reach_a_shell_by_forking(self):
+        """The widest hole in the guard, and it reported `passed`.
+
+        `os.fork` fires an audit event but nothing inspected it, so a handler
+        could fork a child, `execv` a real binary, and read the host. The child
+        is a fresh process with none of the guards installed, so this was a
+        complete escape rather than a leak.
+
+        Blocking `os.fork` is the load-bearing part: `os.execv` fires only
+        CPython's bare `exec` event, which cannot be blocked because ordinary
+        `exec()` of a Python object raises it too.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            secret = os.path.join(directory, "secret.txt")
+            with open(secret, "w", encoding="ascii") as handle:
+                handle.write("HOSTSECRET-CANARY")
+            for attempt in ("fork_exec", "fork_only", "os_times"):
+                with self.subTest(attempt=attempt):
+                    case = json.loads(open(DECLINED, encoding="utf-8").read())
+                    case["name"] = "fork-case"
+                    case["namespace"] = "sim-fork-case"
+                    case["arrivals"] = [
+                        {"at_ns": 0, "handler": "message", "body": {"sku": "book", "amount": 1}}
+                    ]
+                    case["ports"]["payments"]["replies"] = [
+                        {"match": {"$any": True}, "response": {"status": "declined"}}
+                    ]
+                    case["assertions"] = []
+                    case_path = os.path.join(directory, attempt + ".json")
+                    write_json(case_path, case)
+                    out = os.path.join(directory, attempt + "-out.json")
+                    if attempt == "fork_exec":
+                        body = (
+                            "import os\n"
+                            "r_fd, w_fd = os.pipe()\n"
+                            "pid = os.fork()\n"
+                            "if pid == 0:\n"
+                            "    os.close(r_fd)\n"
+                            "    os.dup2(w_fd, 1)\n"
+                            "    os.close(w_fd)\n"
+                            "    os.execv('/bin/cat', ['/bin/cat', os.environ['SECRET']])\n"
+                            "os.close(w_fd)\n"
+                            "chunks = []\n"
+                            "while True:\n"
+                            "    block = os.read(r_fd, 256)\n"
+                            "    if not block:\n"
+                            "        break\n"
+                            "    chunks.append(block)\n"
+                            "os.close(r_fd)\n"
+                            "os.waitpid(pid, 0)\n"
+                            "ctx.emit('payments', {'leaked': b''.join(chunks).decode('utf-8','replace')})\n"
+                        )
+                        want = "real_io"
+                    elif attempt == "fork_only":
+                        body = (
+                            "import os\n"
+                            "pid = os.fork()\n"
+                            "if pid == 0:\n"
+                            "    os._exit(0)\n"
+                            "os.waitpid(pid, 0)\n"
+                            "ctx.emit('payments', {'forked': True})\n"
+                        )
+                        want = "real_io"
+                    else:
+                        body = (
+                            "import os\n"
+                            "ctx.emit('payments', {'t': str(os.times())})\n"
+                        )
+                        want = "real_clock"
+                    script = (
+                        "import os, sys\n"
+                        "from seam import Runtime, main\n"
+                        "rt = Runtime(namespace='shop')\n"
+                        "rt.port('payments', lambda: (lambda request: {'status': 'declined'}))\n"
+                        "rt.port('email', lambda: (lambda request: {'status': 'accepted'}))\n"
+                        "def message(ctx, body):\n"
+                        + "".join("    " + line + "\n" for line in body.strip("\n").split("\n"))
+                        + "rt.on('message', message)\n"
+                        "rt.on('remind', lambda ctx, body: None)\n"
+                        "main(rt)\n"
+                    )
+                    proc = run_product_case(
+                        case_path, "sim-fork-case", out, script, extra={"SECRET": secret}
+                    )
+                    art = loads(open(out, encoding="ascii").read())
+                    blob = dumps(art) + proc.stdout + proc.stderr
+                    self.assertNotIn("HOSTSECRET-CANARY", blob, attempt)
+                    self.assertEqual(art["fault"]["code"], want, attempt)
+                    self.assertEqual(art["status"], "failed", attempt)
+
+    def test_lazy_import_of_a_cold_subpackage_works(self):
+        """A lazy `import` inside a handler must work, including for a stdlib
+        subpackage the interpreter has not touched yet.
+
+        The import system lists a directory to find a module in it. Refusing
+        directory listing outright made this fail, which contradicted the README
+        and broke `importlib.util.find_spec` as well.
+        """
+        with tempfile.TemporaryDirectory(dir=os.path.dirname(REPO)) as directory:
+            case = json.loads(open(DECLINED, encoding="utf-8").read())
+            case["name"] = "lazy-case"
+            case["namespace"] = "sim-lazy-case"
+            case["arrivals"] = [{"at_ns": 0, "handler": "message", "body": {"sku": "book", "amount": 1}}]
+            case["ports"]["payments"]["replies"] = [
+                {"match": {"$any": True}, "response": {"status": "declined"}}
+            ]
+            case["assertions"] = []
+            case_path = os.path.join(directory, "case.json")
+            write_json(case_path, case)
+            out = os.path.join(directory, "out.json")
+            script = (
+                "import os, sys\n"
+                "from seam import Runtime, main\n"
+                "rt = Runtime(namespace='shop')\n"
+                "rt.port('payments', lambda: (lambda request: {'status': 'declined'}))\n"
+                "rt.port('email', lambda: (lambda request: {'status': 'accepted'}))\n"
+                "def message(ctx, body):\n"
+                # A cold stdlib subpackage, and the import system's own directory
+                # listing, both of which used to fault.
+                "    import xml.sax\n"
+                "    import importlib.util\n"
+                "    spec = importlib.util.find_spec('xml.sax')\n"
+                "    ctx.emit('payments', {'found': spec is not None})\n"
+                "rt.on('message', message)\n"
+                "rt.on('remind', lambda ctx, body: None)\n"
+                "sys.stdout.write('CODE %s\\n' % main(rt))\n"
+            )
+            proc = run_product_case(case_path, "sim-lazy-case", out, script)
+            self.assertIn("CODE 0", proc.stdout, proc.stderr)
+            art = loads(open(out, encoding="ascii").read())
+            self.assertEqual(art["status"], "passed", dumps(art)[:400])
+            self.assertEqual(art["port_calls"][0]["request"], {"found": True})
+
+    def test_patched_stat_returns_a_real_result_and_full_signature(self):
+        """`_check_stat` must behave like `os.stat`.
+
+        It used to return None, so `os.path.exists()` would answer True for a
+        path that does not exist, and it took only `(path)`, so `pathlib`,
+        `shutil` and `linecache` died with a `TypeError` instead of a `file_read`.
+        """
+        script = (
+            "import os, sys, linecache\n"
+            "from seam import Runtime, main\n"
+            "rt = Runtime(namespace='shop')\n"
+            "rt.port('payments', lambda: (lambda request: {'status': 'declined'}))\n"
+            "rt.port('email', lambda: (lambda request: {'status': 'accepted'}))\n"
+            "def message(ctx, body):\n"
+            "    path = os.environ['NOTE']\n"
+            "    st = os.stat(path, follow_symlinks=False)\n"
+            "    ctx.emit('payments', {'size': st.st_size, 'exists': os.path.exists(path)})\n"
+            "rt.on('message', message)\n"
+            "rt.on('remind', lambda ctx, body: None)\n"
+            "main(rt)\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            note = os.path.join(directory, "note.txt")
+            with open(note, "w", encoding="ascii") as handle:
+                handle.write("hello")
+            case = json.loads(open(DECLINED, encoding="utf-8").read())
+            case["name"] = "stat-case"
+            case["namespace"] = "sim-stat-case"
+            case["arrivals"] = [{"at_ns": 0, "handler": "message", "body": {"sku": "book", "amount": 1}}]
+            case["ports"]["payments"]["replies"] = [
+                {"match": {"$any": True}, "response": {"status": "declined"}}
+            ]
+            case["assertions"] = []
+            case_path = os.path.join(directory, "case.json")
+            write_json(case_path, case)
+            out = os.path.join(directory, "out.json")
+            proc = run_product_case(
+                case_path, "sim-stat-case", out, script, extra={"NOTE": note}
+            )
+            art = loads(open(out, encoding="ascii").read())
+            self.assertEqual(art["fault"]["code"], "file_read", dumps(art)[:300])
+            self.assertEqual(art["port_calls"], [])
+
     def test_handler_can_import_the_project_its_own_modules(self):
         """A handler importing its own modules is ordinary product code.
 

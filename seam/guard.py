@@ -58,6 +58,33 @@ _WRITE_EVENTS = {
     "os.link": "os.link",
     "os.utime": "os.utime",
 }
+# `os.fork` and `exec` fire audit events but were not inspected, which left the
+# widest hole in the guard: a forked child is a fresh process with none of these
+# guards installed, so `os.fork()` plus `os.execv('/bin/cat', ...)` read the host
+# and reported `passed`. The audit hook is now the only thing standing between a
+# handler and a real shell, so this list is deliberately conservative.
+_FORK_EVENTS = frozenset(
+    {
+        "os.fork",
+        "os.forkpty",
+        "os.posix_spawn",
+        "os.posix_spawnp",
+        "os.spawn",
+        "os.system",
+        "os.execl",
+        "os.execve",
+        "os.execv",
+        "os.execvp",
+        "os.execvpe",
+        "os.execle",
+        "os.execle",
+        "os.execvpe",
+        "os.spawnv",
+        "os.spawnve",
+        "os.spawnvp",
+        "os.spawnvpe",
+    }
+)
 _READ_EVENTS = {
     "os.listdir": "os.listdir",
     "os.scandir": "os.scandir",
@@ -440,16 +467,28 @@ def _check_path_event(op, code):
     return blocked
 
 
-def _check_stat(path):
-    """`os.stat` raises no audit event, so it is patched rather than observed."""
+def _check_stat(path, *args, **kwargs):
+    """`os.stat` raises no audit event, so it is patched rather than observed.
+
+    Takes the full stdlib signature. Anything narrower breaks `pathlib`,
+    `shutil` and `linecache`, all of which pass `dir_fd` or `follow_symlinks`.
+    A `TypeError` there is an opaque `handler_error`, not the `file_read` this is
+    supposed to produce.
+
+    Returns a real stat result for an allowlisted path, because `os.path.*`,
+    `pathlib` and `linecache` all read `st_*` off the return value. Returning
+    None here would make `os.path.exists()` answer True for a path that does not
+    exist: a silently wrong result rather than a fault.
+    """
     # `os.path.realpath` stats every component of the path. While seam is
     # resolving a path, this hook must be silent or it refuses seam's own work.
     if POLICY._resolving:
-        return None
+        return _real_stat(path, *args, **kwargs)
     real = _norm(path)
     if real is None or (real not in POLICY.read_paths and not POLICY.is_interpreter(real)):
         raise Fault("file_read", op="file.stat")
     POLICY.note_read(real)
+    return _real_stat(path, *args, **kwargs)
 
 
 def _is_bytecode_path(path):
@@ -492,8 +531,15 @@ def _audit(event, args):
         raise Fault("real_io", op=mapped)
     if event.startswith("subprocess."):
         raise Fault("real_io", op="subprocess")
-    if event in ("os.system", "os.posix_spawn", "os.posix_spawnp"):
-        raise Fault("real_io", op="subprocess" if event != "os.system" else "os.system")
+    if event in _FORK_EVENTS:
+        # A forked or exec'd child is a brand-new process with none of these
+        # guards installed. Blocking the audit event here is what stops a
+        # handler reaching a real shell, so it is checked before anything else.
+        #
+        # The bare `exec` audit event is deliberately NOT in the list: CPython
+        # raises it for ordinary `exec()` of Python objects, so blocking it
+        # breaks any code that evaluates, including unittest itself.
+        raise Fault("real_io", op="subprocess")
     if event in _CTYPES_EVENTS:
         # libc is reachable from here, so real clocks and real syscalls are too.
         raise Fault("real_io", op="ctypes")
@@ -507,9 +553,20 @@ def _audit(event, args):
             raise Fault("file_write", op=_WRITE_EVENTS[event])
         return
     if event in _READ_EVENTS:
-        if trusted is None:
-            raise Fault("file_read", op=_READ_EVENTS[event])
-        return
+        if trusted is not None:
+            return
+        # Directory listing goes through the same allowlist as `open`. Refusing
+        # it outright would make the documented lazy-import promise false: the
+        # import system lists a directory to find a module in it, so any cold
+        # `import xml.sax` inside a handler would fault.
+        for arg in args:
+            real = _norm(arg)
+            if real is not None and (
+                real in POLICY.read_paths or POLICY.is_interpreter(real)
+            ):
+                POLICY.note_read(real)
+                return
+        raise Fault("file_read", op=_READ_EVENTS[event])
     if event == "open" and args and trusted is None:
         # A `.pyc` write is the import machinery finishing its job.
         if _is_bytecode_path(args[0]):
@@ -582,6 +639,11 @@ def install_guards(*, write_paths=(), read_paths=()):
         if hasattr(time, name):
             setattr(time, name, _clock(f"time.{name}"))
     _datetime.datetime = _BlockedDatetime
+
+    # `os.times()` reports real process and wall time, and fires no audit event,
+    # so it has to be patched like the rest of the clock.
+    if hasattr(os, "times"):
+        os.times = _clock("os.times")
 
     for name in _RANDOM_METHODS + ("seed",):
         if hasattr(random, name):
