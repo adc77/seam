@@ -4,12 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "seam"
-version = "0.1.0"
+# Read from seam/version.py, which is the single source of truth. Hardcoding it
+# here as well meant a release bump could update one file and not the other, and
+# the artifact would then report a stale package_version.
+dynamic = ["version"]
 description = "A simulation boundary for a product. Inert in production. Seeded in a separate run."
 requires-python = ">=3.11"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
+
+[tool.setuptools.dynamic]
+version = {attr = "seam.version.__version__"}
 
 [tool.setuptools.packages.find]
 include = ["seam*"]

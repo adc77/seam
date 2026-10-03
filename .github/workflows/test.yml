@@ -44,11 +44,14 @@ jobs:
           SEAM_ARTIFACT="$RUNNER_TEMP/declined.json" \
           python -m seam.proof.checkout
           test -s "$RUNNER_TEMP/declined.json"
-          python - "$RUNNER_TEMP/declined.json" <<'PY'
+          # The expected digest is read from the suite rather than repeated
+          # here, so there is exactly one place to change when the format moves.
+          PYTHONPATH=. python - "$RUNNER_TEMP/declined.json" <<'PY'
           import json, sys
+          from tests.support import RUN_DIGEST
           art = json.load(open(sys.argv[1]))
           assert art["status"] == "passed", art
-          assert art["digest"] == "40e9b490276e08ebf25d4865628e8902521b65e83bfb1ab11139c64a8e6146bd", art["digest"]
+          assert art["digest"] == RUN_DIGEST, (art["digest"], RUN_DIGEST)
           print("proof ok:", art["digest"])
           PY
 

@@ -522,6 +522,47 @@ def _finish(rt, case):
     return result, finish(result, case)
 
 
+class FaultCodeTest(unittest.TestCase):
+    def test_every_raised_fault_code_is_declared(self):
+        """A case may only assert on a fault code listed in `FAULT_CODES`.
+
+        Nothing stops a new `Fault("...")` from being raised in a module that has
+        no access to that set, so this walks the source instead. A code that is
+        raised but not declared is unassertable: a case written to catch it
+        would be refused as a bad_case, and the failure would look like a typo in
+        the test rather than a gap in the declaration.
+        """
+        import pathlib
+        import re
+
+        from seam.case import FAULT_CODES, STOP_REASONS
+
+        package = pathlib.Path(__file__).resolve().parent.parent / "seam"
+        raised = set()
+        for path in sorted(package.rglob("*.py")):
+            raised.update(
+                re.findall(
+                    r"""\bFault\(\s*["']([a-z_]+)["']""", path.read_text(encoding="utf-8")
+                )
+            )
+        self.assertTrue(raised, "no Fault codes found; the scan is broken")
+        self.assertEqual(
+            sorted(raised - FAULT_CODES),
+            [],
+            "fault codes raised but not declared in FAULT_CODES",
+        )
+        # And nothing declared is dead, which catches a rename that only landed
+        # on one side.
+        self.assertEqual(
+            sorted(FAULT_CODES - raised),
+            [],
+            "codes declared in FAULT_CODES that nothing raises",
+        )
+        # The two sets are disjoint: a stop reason is set, a fault code is
+        # raised, and conflating them is what this split exists to prevent.
+        self.assertEqual(STOP_REASONS & FAULT_CODES, set())
+
+
 class ParentStaysLiveTest(unittest.TestCase):
     def test_parent_clock_still_works(self):
         import time

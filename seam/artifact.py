@@ -7,6 +7,12 @@ from seam.version import __version__
 
 MAX_ARTIFACT = 32 * 1024 * 1024
 
+#: Mode for the written artifact. `0o644` rather than anything stricter: the
+#: artifact carries the whole run, and a caller may want to read it after the
+#: process exits. It is written to a temp name and renamed, so a reader never
+#: sees a partial file.
+ARTIFACT_MODE = 0o644
+
 
 def digest_body(result):
     """Keys that enter the run digest. Grader failures stay out. A post-seal fault stays out."""
@@ -101,9 +107,9 @@ def write_artifact(path, obj):
         handle.write(text)
         handle.flush()
         os.fsync(handle.fileno())
-    os.chmod(tmp, 0o644)
+    os.chmod(tmp, ARTIFACT_MODE)
     os.replace(tmp, path)
-    os.chmod(path, 0o644)
+    os.chmod(path, ARTIFACT_MODE)
 
 
 def tape_from_artifact(artifact):

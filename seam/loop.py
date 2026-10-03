@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from seam.canon import deep_copy, dumps
+from seam.canon import MAX_STRING, deep_copy, dumps
 from seam.case import TERMINAL
 from seam.clock import VirtualClock, format_utc
 from seam.ctx import Ctx, assert_int, replace_at
@@ -240,7 +240,7 @@ class Engine:
         except (TypeError, ValueError):
             self.fail(Fault("bad_value", during=after))
             return
-        if len(blob.encode("ascii")) > 1024 * 1024:
+        if len(blob.encode("ascii")) > MAX_STRING:
             self.fail(Fault("bad_value", during=after))
             return
         if self.case.log_state == "on_change" and blob == self._finger:
