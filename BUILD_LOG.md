@@ -77,3 +77,42 @@ Local implementation of PLAN.md. Heavy work is skipped and written down here. No
 - One battery check failed at first and the code was right: calling
   `rt.emit(...)` outside a handler is refused by design on `main` as well as on
   this branch, so the check was wrong, not the guard.
+
+## 2026-10-01 — four independent reviewers, and what they found
+
+- Ran four reviewers in parallel against the branches: an attacker looking for
+  guard bypasses, one checking whether the policy is usable at all, one mutation
+  testing the glass suite, and one auditing the workflows and the PR text. Two
+  of them found things I had missed, and both were real.
+
+- **The policy was too strict to adopt.** A handler could not import its own
+  project's modules: only the interpreter's directories were allowlisted for
+  reads, so `import mylib` inside a handler faulted with `file_read`. That is
+  ordinary product code, and it is what a product does when it lazily pulls in
+  an adapter. Fixed by taking code directories from `sys.path`, plus exempting
+  the `__pycache__` writes that importing performs, plus allowing the integer
+  descriptor the `.pyc` write arrives as. Excluding the system temp directory
+  from that set mattered: a harness writes its program into a temp file, so
+  `sys.path[0]` pointed at the temp area and would have allowlisted every file
+  beside it. My own test caught that last one.
+
+- **`on_retry` and `on_retest` still indexed `body["kind"]` directly.** The
+  earlier commit added `_receipt` for `on_receive` but left these two, so a
+  delivery without a kind raised a `KeyError` and surfaced as `handler_error`.
+  Fixed with `_kind`, which prefers the body and falls back to state. Both new
+  tests were verified to fail against the pre-fix state.
+
+- **`logging` cannot be called from a handler.** It stamps every record with
+  `time.time_ns()`, so a log call faults with `real_clock`. `tempfile` is out
+  for the same reason via `random`. Both are consequences of the guard working,
+  not bugs, so they are documented in the README rather than papered over. I
+  started to give `logging` the virtual clock and backed out: replacing
+  `logging.time` wholesale is the kind of change that trades one surprise for
+  another, and it is not mine to make silently in a hardening branch.
+
+- Two of the twenty-one mutations survived. Both were my mutation being
+  dishonest: `socket` is blocked twice, by the audit hook and by the direct
+  monkeypatch, and `allow_read` and `allow_write` share one refusal. Removing
+  both socket defences, or both refusals, turns the suite red. The suite pins
+  these guarantees; it cannot say which of two redundant defences did the work.
+

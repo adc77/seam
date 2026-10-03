@@ -44,6 +44,18 @@ The policy **seals** when the guards install. `allow_read`, `allow_write` and `t
 
 **This is not a sandbox.** It refuses the standard-library paths listed above; it does not contain a process. A name bound before `install_guards()` still points at the original object, C extensions can reach libc without going through `ctypes`, and a determined handler can defeat a monkeypatch. Treat the digest as a strong signal for code that follows the rules, not as a security boundary.
 
+### What a handler cannot do
+
+These are consequences of the guard, not oversights. A product that hits them needs a small change, and it is better to know up front:
+
+- **Call `logging` from a handler.** `logging` stamps every record with `time.time_ns()`, so a log call faults with `real_clock`. Log through a port instead, or configure a handler that defers its own timestamps.
+- **Use `tempfile`.** It draws names from `random`, which faults with `unseeded_random`. Use a port for that.
+- **Write a file from a handler**, unless the path is passed to `allow_write` before the run.
+- **Import inside a handler and expect the import's own side effects to be visible.** Imports are allowed, but a module that reads the clock or the filesystem at import time will fault, which is the guard working as intended.
+- **Start a thread**, or call a live factory in sim mode. Both fault.
+
+The pattern that avoids all of this: a handler should take time, randomness, ids and side effects from `ctx` and its ports. That is the design, and the guard exists to keep a product honest to it.
+
 ## Adopting it
 
 Wrap the product's outside world in ports and route its messages through handlers. Then the same code runs live or simulated with no branching in the product:
