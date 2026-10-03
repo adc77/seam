@@ -50,3 +50,30 @@ Local implementation of PLAN.md. Heavy work is skipped and written down here. No
 - Ordering bit twice more while fixing this: `_make_sealed_stat` and the `POLICY` construction each need to come after the other. Both are now defined below the helpers they use.
 - A regression test runs all six attempts and asserts the host value appears nowhere in the artifact. Suite is 39 tests, green.
 - Still true after all of this: the guard refuses the listed standard-library paths and does not contain a process. A name bound before `install_guards()` still points at the original object, and a C extension can reach libc without `ctypes`. The README says so.
+
+## 2026-10-01 — mutation testing the suites
+
+- A green suite proves nothing if it cannot fail, so I mutated 21 behaviours one
+  at a time and required the suite to go red for each. 19 were caught on the
+  first mutation.
+- Two survived, and both were my mutation being dishonest rather than a test
+  gap. `socket` is blocked twice, by the audit hook and by the direct
+  monkeypatch; removing one leaves the other, and only removing both turns the
+  suite red. `allow_read` and `allow_write` share one refusal, and disabling a
+  single occurrence left the other to catch it. Disabling both, or both socket
+  defences, turns the suite red as expected.
+- So the suite does pin these guarantees; it just cannot tell which of two
+  redundant defences is doing the work. That is acceptable for defence in depth
+  and worth recording so nobody later reads a surviving mutant as a free pass.
+- Two mutations were skipped because the pattern did not match; they were
+  rewritten as no-op edits and are not claimed as evidence either way.
+- Independent battery, all executed rather than assumed: 17/17 checks. Digest
+  stability across three separate process restarts for all three proof cases;
+  the pinned run and case digests still hold; a product using only ctx for time,
+  rng, ids and timers is stable across three runs; live mode still has working
+  wall clock, perf_counter, monotonic, state, timers, ports and recording;
+  glass passes from a clean clone both as a sibling and via SEAM_SDK_PATH; both
+  trees clean with no build output tracked.
+- One battery check failed at first and the code was right: calling
+  `rt.emit(...)` outside a handler is refused by design on `main` as well as on
+  this branch, so the check was wrong, not the guard.
