@@ -5,8 +5,8 @@ from copy import deepcopy
 
 from seam.artifact import assemble, digest_body
 from seam.canon import digest, equal, matches
-from seam.errors import Fault
-from seam.guard import trusted
+from seam.errors import Fault, fault_scope
+from seam.guard import _handler_scope, trusted
 
 
 def _port_calls(art, port):
@@ -21,11 +21,12 @@ def _lookup(state, path):
         if type(cur) is dict and seg in cur:
             cur = cur[seg]
             continue
-        if type(cur) is list and seg.isdigit() and str(int(seg)) == seg:
-            i = int(seg)
-            if 0 <= i < len(cur):
-                cur = cur[i]
-                continue
+        if type(cur) is list and seg.isascii() and seg.isdigit() and not (len(seg) > 1 and seg[0] == "0"):
+            if len(seg) <= len(str(len(cur))):
+                i = int(seg)
+                if i < len(cur):
+                    cur = cur[i]
+                    continue
         return False, None
     return True, cur
 
@@ -126,6 +127,9 @@ def _load_grader(spec):
     fn = getattr(module, func_name)
     if not callable(fn):
         raise Fault("grader_error")
+    from seam.runtime import require_sync
+
+    require_sync(fn)
     return fn
 
 
@@ -151,9 +155,17 @@ def finish(result, case):
     result.assertions = check_all(assemble(result), case.assertions)
     result.status = "failed" if _failed(result) else "passed"
     if case.grader:
+        def post_fault(err):
+            if result.loop_fault is None and result.post_fault is None:
+                result.post_fault = err
+
         try:
             fn = _load_grader(case.grader)
-            out = fn(deepcopy(assemble(result)))
+            with _handler_scope(), fault_scope(post_fault):
+                out = fn(deepcopy(assemble(result)))
+                from seam.runtime import require_sync_result
+
+                require_sync_result(out)
             if type(out) is not list or any(type(item) is not str for item in out):
                 raise Fault("grader_error", exc_type="ValueError")
             result.grader_failures = out
@@ -161,6 +173,9 @@ def finish(result, case):
             if result.loop_fault is None and result.post_fault is None:
                 result.post_fault = err
         except Exception as err:
+            if result.loop_fault is None and result.post_fault is None:
+                result.post_fault = Fault("grader_error", exc_type=type(err).__name__)
+        except BaseException as err:
             if result.loop_fault is None and result.post_fault is None:
                 result.post_fault = Fault("grader_error", exc_type=type(err).__name__)
     result.status = "failed" if _failed(result) else "passed"

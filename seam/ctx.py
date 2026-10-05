@@ -14,7 +14,9 @@ def _check_size(value):
 
 
 def _index(seg, length):
-    if type(seg) is not str or not seg.isdigit():
+    if type(seg) is not str or not seg.isascii() or not seg.isdigit():
+        raise Fault("bad_value")
+    if len(seg) > len(str(length)):
         raise Fault("bad_value")
     i = int(seg)
     if str(i) != seg or i < 0 or i >= length:
@@ -118,6 +120,10 @@ class Ctx:
     @property
     def handler(self):
         return self._handler
+
+    @property
+    def config(self):
+        return deep_copy(self._host.config)
 
 
 def assert_int(value, *, minimum=None, maximum=INT64_MAX):

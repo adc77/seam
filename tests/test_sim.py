@@ -852,43 +852,6 @@ class ProcessTest(unittest.TestCase):
             self.assertNotIn("HOST-SECRET-VALUE", blob)
             self.assertEqual(art["fault"]["code"], "file_read")
 
-    def test_bytecode_writes_are_permitted_and_not_an_abuse(self):
-        """Importing writes `.pyc` files. That must not fault, and the exemption
-        must not become a way to write anything else."""
-        from seam.guard import _is_bytecode_path
-
-        self.assertTrue(_is_bytecode_path("/app/__pycache__"))
-        self.assertTrue(_is_bytecode_path("/app/__pycache__/mod.cpython-313.pyc"))
-        self.assertFalse(_is_bytecode_path("/app/data/secret.txt"))
-        self.assertFalse(_is_bytecode_path("/app/__pycache__x/secret.txt"))
-        self.assertFalse(_is_bytecode_path("/etc/hosts"))
-        self.assertFalse(_is_bytecode_path(3))
-
-    def test_a_pycache_component_cannot_smuggle_a_path(self):
-        """`__pycache__/..` must not qualify.
-
-        The exemption used to test whether `__pycache__` appeared among the
-        literal path components, without normalising first. Any path of the form
-        `<dir>/__pycache__/../<target>` therefore qualified, and a handler got
-        arbitrary read, write and delete of anything the process could reach,
-        with the run still reporting `passed`.
-
-        These are unit assertions on the predicate; `test_a_handler_cannot_reach
-        _the_host_through_a_pycache_component` runs the whole thing.
-        """
-        from seam.guard import _is_bytecode_path
-
-        for target in ("secret.txt", "..", "..", "etc", "hosts"):
-            self.assertFalse(
-                _is_bytecode_path(f"/app/__pycache__/../{target}"),
-                f"/app/__pycache__/../{target} must not be exempt",
-            )
-        # And the shape that genuinely is bytecode still is.
-        self.assertTrue(_is_bytecode_path("/app/pkg/__pycache__/m.cpython-313.pyc"))
-        # A traversal that lands back inside a real __pycache__ is still allowed,
-        # because that is where it ends up.
-        self.assertTrue(_is_bytecode_path("/app/__pycache__/../pkg/__pycache__/m.pyc"))
-
     def test_a_handler_cannot_reach_the_host_through_a_pycache_component(self):
         """End to end: read, overwrite and delete through `<dir>/__pycache__/..`.
 

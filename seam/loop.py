@@ -2,13 +2,14 @@
 
 from dataclasses import dataclass
 
-from seam.canon import ID_HEX_WIDTH, INT64_MAX, MAX_STRING, TIMER_TOKEN_PREFIX, U64_BYTES, deep_copy, dumps
+from seam.canon import ID_HEX_WIDTH, INT64_MAX, MAX_STRING, TIMER_TOKEN_PREFIX, deep_copy, dumps
 from seam.case import TERMINAL
 from seam.clock import VirtualClock, format_utc
 from seam.ctx import Ctx, assert_int, replace_at
-from seam.errors import Fault, Refuse
+from seam.errors import Fault, PortError, Refuse, fault_scope
 from seam.guard import _handler_scope
 from seam.queue import Queue
+from seam.backend import BackendPort
 from seam.rng import Rng
 
 
@@ -34,6 +35,9 @@ class Result:
     grader_failures: list | None = None
     post_fault: Fault | None = None
     fs_reads: list | None = None
+    backend_states: dict | None = None
+    provenance: dict | None = None
+    version: int = 1
 
 
 class Engine:
@@ -67,6 +71,10 @@ class Engine:
             self.fault = fault
             self.stop_reason = fault.code
 
+    def _handler_fault(self, fault):
+        fault.during = self._during
+        self.fail(fault)
+
     def _event(self, row):
         row["i"] = len(self.events)
         self.events.append(row)
@@ -94,6 +102,10 @@ class Engine:
     @property
     def namespace(self):
         return self.case.namespace
+
+    @property
+    def config(self):
+        return self.case.config
 
     def state_copy(self):
         return deep_copy(self.state)
@@ -127,8 +139,12 @@ class Engine:
         script = self.case.ports[port]
         try:
             response = script.call(deep_copy(request_copy))
+        except PortError as err:
+            self._log_call(port, request_copy, None, script.source)
+            self.port_calls[-1]["error"] = err.code
+            raise
         except Fault as err:
-            if err.code in ("unmatched_port", "tape_mismatch", "tape_exhausted"):
+            if isinstance(script, BackendPort) or err.code in ("unmatched_port", "tape_mismatch", "tape_exhausted"):
                 self._log_call(port, request_copy, None, script.source)
             raise Fault(err.code, op=err.op, during=self._during, exc_type=err.exc_type) from None
         stored = deep_copy(response)
@@ -271,8 +287,11 @@ class Engine:
         try:
             # Inside this scope the filesystem policy refuses to be widened and
             # `trusted()` is refused, so a handler cannot grant itself access.
-            with _handler_scope():
-                self.handlers[handler](ctx, deep_copy(body_copy))
+            with _handler_scope(), fault_scope(self._handler_fault):
+                result = self.handlers[handler](ctx, deep_copy(body_copy))
+                from seam.runtime import require_sync_result
+
+                require_sync_result(result)
         except Fault as err:
             event["status"] = "error"
             if err.during is None:
@@ -284,9 +303,14 @@ class Engine:
         except Exception as err:
             event["status"] = "error"
             self.fail(Fault("handler_error", during=event["i"], exc_type=type(err).__name__))
+        except BaseException as err:
+            event["status"] = "error"
+            self.fail(Fault("handler_error", during=event["i"], exc_type=type(err).__name__))
         finally:
             self._set_depth(0)
             self.queue.flush()
+        if self.fault is not None:
+            event["status"] = "error"
         self._snapshot(event["i"])
 
     def _finish_empty(self):
@@ -323,6 +347,16 @@ class Engine:
         return view
 
     def _seal_result(self):
+        backend_states = {}
+        try:
+            with _handler_scope(), fault_scope(self._handler_fault):
+                for name, port in self.case.ports.items():
+                    if isinstance(port, BackendPort):
+                        backend_states[name] = port.state()
+        except Fault as err:
+            self.fail(err)
+        except BaseException as err:
+            self.fail(Fault("bad_backend", exc_type=type(err).__name__))
         self.result = Result(
             name=self.case.name,
             namespace=self.case.namespace,
@@ -338,6 +372,9 @@ class Engine:
             stop_reason=self.stop_reason,
             terminal=self.terminal,
             loop_fault=self.fault,
+            backend_states=backend_states,
+            provenance=self.case.provenance,
+            version=self.case.normalized["version"],
         )
 
     def run(self):

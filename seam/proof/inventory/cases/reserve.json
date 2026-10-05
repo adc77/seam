@@ -1,0 +1,23 @@
+{
+  "format": "seam-case",
+  "version": 2,
+  "name": "reserve",
+  "seed": 1842,
+  "namespace": "sim-inventory-reserve",
+  "clock": {"start_ns": 0, "epoch": "1970-01-01T00:00:00Z"},
+  "initial_state": {},
+  "datasets": {
+    "stock": {"path": "stock.json", "sha256": "fdbff99a357b7bb1b874ef2e3a9af71fcd748c9d58733f9c90775a98f9edac75", "as_of_ns": 0}
+  },
+  "arrivals": [
+    {"at_ns": 0, "handler": "reserve", "body": {"order": "o1", "sku": "book", "quantity": 2}},
+    {"at_ns": 1, "handler": "reserve", "body": {"order": "o2", "sku": "book", "quantity": 2}}
+  ],
+  "ports": {"stock": {"mode": "backend", "dataset": "stock"}},
+  "stop": {"when": "quiescence"},
+  "assertions": [
+    {"op": "state_is", "path": "o1", "value": "reserved"},
+    {"op": "state_is", "path": "o2", "value": "unavailable"},
+    {"op": "port_called", "port": "stock", "times": 2}
+  ]
+}

@@ -31,13 +31,15 @@ def digest_body(result):
         body["terminal"] = result.terminal
     if result.loop_fault is not None:
         body["fault"] = result.loop_fault.as_dict()
+    if result.backend_states:
+        body["backend_states"] = result.backend_states
     return body
 
 
 def assemble(result):
     art = {
         "format": "seam-artifact",
-        "version": 1,
+        "version": result.version,
         "name": result.name,
         "namespace": result.namespace,
         "seed": result.seed,
@@ -65,6 +67,10 @@ def assemble(result):
         art["grader"] = result.grader_failures
     if result.fs_reads:
         art["fs_reads"] = result.fs_reads
+    if result.backend_states:
+        art["backend_states"] = result.backend_states
+    if result.provenance:
+        art["provenance"] = result.provenance
     return art
 
 
@@ -118,18 +124,18 @@ def tape_from_artifact(artifact):
     """One canonical tape line per port call. `at_ns` is the virtual time of the call."""
     lines = []
     for call in artifact["port_calls"]:
-        lines.append(
-            dumps(
-                {
-                    "format": "seam-tape",
-                    "version": 1,
-                    "at_ns": call["at_ns"],
-                    "port": call["port"],
-                    "request": call["request"],
-                    "response": call["response"],
-                }
-            )
-        )
+        row = {
+            "format": "seam-tape",
+            "version": 1 if "error" not in call else 2,
+            "at_ns": call["at_ns"],
+            "port": call["port"],
+            "request": call["request"],
+            "response": call["response"],
+        }
+        if "error" in call:
+            del row["response"]
+            row["error"] = call["error"]
+        lines.append(dumps(row))
     if not lines:
         return b""
     return ("\n".join(lines) + "\n").encode("ascii")

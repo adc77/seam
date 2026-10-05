@@ -1,6 +1,8 @@
 """Registration, live delivery, and the simulation process entry."""
 
 import os
+import inspect
+import threading
 import time
 
 from seam.artifact import refused, write_artifact
@@ -8,12 +10,28 @@ from seam.canon import ID_HEX_WIDTH, INT64_MAX, TIMER_TOKEN_PREFIX, U64_BYTES, d
 from seam.case import IDENT, TERMINAL, load_case
 from seam.clock import format_utc
 from seam.ctx import Ctx, assert_int, replace_at
-from seam.errors import Fault, NoTimerBackend, Refuse
+from seam.errors import Fault, NoTimerBackend, PortError, Refuse
 from seam.grade import exit_code, finish
 from seam.guard import install_guards, trusted
 from seam.loop import run_sim
 
 _CONSUMED = False
+
+
+def require_sync(fn, *, fault=False):
+    """Reject asynchronous and generator callables before delivery."""
+    targets = (fn, getattr(fn, "__call__", None))
+    if any(inspect.iscoroutinefunction(target) or inspect.isgeneratorfunction(target)
+           or inspect.isasyncgenfunction(target) for target in targets):
+        raise (Fault if fault else Refuse)("unsupported_handler")
+
+
+def require_sync_result(result):
+    """Catch callables that conceal asynchronous or generator results."""
+    if inspect.isawaitable(result) or inspect.isgenerator(result) or inspect.isasyncgen(result):
+        if inspect.iscoroutine(result) or inspect.isgenerator(result):
+            result.close()
+        raise Fault("unsupported_handler")
 
 #: Environment variables the runner reads. Named once so a typo is one edit
 #: rather than a search, and so `SEAM_SIM` in particular cannot be read two
@@ -89,7 +107,12 @@ class Factory:
             raise Refuse("live_factory_called")
         if self.client is None:
             self.calls += 1
-            self.client = self.fn()
+            client = self.fn()
+            require_sync_result(client)
+            require_sync(client, fault=True)
+            if not callable(client):
+                raise Fault("bad_value")
+            self.client = client
         return self.client
 
     def __call__(self):
@@ -100,18 +123,21 @@ class Factory:
 
 
 class Runtime:
-    def __init__(self, namespace="live"):
+    def __init__(self, namespace="live", *, config=None, initial_state=None):
         if type(namespace) is not str or namespace == "" or namespace.startswith("sim-"):
             raise Refuse("namespace")
         self.namespace = namespace
+        self.config = {} if config is None else deep_copy(config)
         self.mode = None
         self.handlers = {}
         self.factories = {}
+        self.backends = {}
         self._depth = 0
-        self._state = {}
+        self._state = {} if initial_state is None else replace_at({}, "", initial_state)
         self._redact = None
         self._timer_backend = None
         self._live_timers = {}
+        self._lock = threading.RLock()
         self._token_n = 0
         self._record = None
         self.stopped = None
@@ -121,6 +147,7 @@ class Runtime:
             raise Refuse("bad_env")
         if type(name) is not str or not IDENT.match(name) or name in self.factories or not callable(factory):
             raise Refuse("bad_case")
+        require_sync(factory)
         self.factories[name] = Factory(factory)
         return self.factories[name]
 
@@ -129,7 +156,15 @@ class Runtime:
             raise Refuse("bad_env")
         if type(name) is not str or not IDENT.match(name) or name in self.handlers or not callable(handler):
             raise Refuse("bad_case")
+        require_sync(handler)
         self.handlers[name] = handler
+
+    def sim_port(self, name, factory):
+        """Register a simulation-only backend factory for an existing product port."""
+        if self.mode is not None or name not in self.factories or name in self.backends or not callable(factory):
+            raise Refuse("bad_backend")
+        require_sync(factory)
+        self.backends[name] = factory
 
     def redact(self, fn):
         if not callable(fn):
@@ -170,7 +205,20 @@ class Runtime:
             self._record = open(path, "a", encoding="ascii", newline="\n")
         self.mode = "live"
 
+    def close(self):
+        """Close a live runtime and its optional recording file."""
+        with self._lock:
+            if self.mode != "live" or self._depth:
+                raise Refuse("bad_env")
+            if self._record is not None:
+                self._record.close()
+            self.mode = "closed"
+
     def deliver(self, name, body):
+        with self._lock:
+            return self._deliver(name, body)
+
+    def _deliver(self, name, body):
         if self.mode is None:
             raise Refuse("bad_env")
         if self.mode != "live" or self._depth:
@@ -180,7 +228,8 @@ class Runtime:
         ctx = Ctx(self, name)
         self._depth += 1
         try:
-            self.handlers[name](ctx, deep_copy(body))
+            result = self.handlers[name](ctx, deep_copy(body))
+            require_sync_result(result)
         finally:
             self._depth -= 1
 
@@ -216,30 +265,40 @@ class Runtime:
         if type(port) is not str or port not in self.factories:
             raise Fault("unknown_port")
         request_copy = deep_copy(request)
-        client = self.factories[port].materialize()
-        response = deep_copy(client(deep_copy(request_copy)))
+        try:
+            client = self.factories[port].materialize()
+            value = client(deep_copy(request_copy))
+            require_sync_result(value)
+            response = deep_copy(value)
+        except PortError as err:
+            if self._record is not None:
+                self._record_line(port, request_copy, None, error=err.code)
+            raise
         if self._record is not None:
             self._record_line(port, request_copy, response)
         return deep_copy(response)
 
-    def _record_line(self, port, request, response):
+    def _record_line(self, port, request, response, *, error=None):
         from seam.canon import dumps
 
         recorded_request = request
         recorded_response = response
         if self._redact is not None:
             recorded_request = deep_copy(self._redact(deep_copy(request)))
-            recorded_response = deep_copy(self._redact(deep_copy(response)))
-        line = dumps(
-            {
-                "format": "seam-tape",
-                "version": 1,
-                "at_ns": time.time_ns(),
-                "port": port,
-                "request": recorded_request,
-                "response": recorded_response,
-            }
-        )
+            if error is None:
+                recorded_response = deep_copy(self._redact(deep_copy(response)))
+        row = {
+            "format": "seam-tape",
+            "version": 1 if error is None else 2,
+            "at_ns": time.time_ns(),
+            "port": port,
+            "request": recorded_request,
+            "response": recorded_response,
+        }
+        if error is not None:
+            del row["response"]
+            row["error"] = error
+        line = dumps(row)
         self._record.write(line + "\n")
         self._record.flush()
         os.fsync(self._record.fileno())
@@ -261,24 +320,52 @@ class Runtime:
         return self._arm(at_ns, handler, body, name)
 
     def _arm(self, at_ns, handler, body, name):
+        if self.mode != "live" or self._depth == 0:
+            raise Fault("bad_value")
         if self._timer_backend is None:
             raise NoTimerBackend()
         if type(handler) is not str or handler not in self.handlers:
             raise Fault("unknown_handler")
         if name is not None and (type(name) is not str or not TERMINAL.match(name)):
             raise Fault("bad_value")
+        if name is not None and any(row["name"] == name for row in self._live_timers.values()):
+            raise Fault("bad_value")
         self._token_n += 1
         token = f"{TIMER_TOKEN_PREFIX}{self._token_n}"
-        self._live_timers[token] = "armed"
-        self._timer_backend(token, at_ns, handler, deep_copy(body), name)
+        body_copy = deep_copy(body)
+        self._live_timers[token] = {"status": "armed", "handler": handler, "body": body_copy, "name": name}
+        try:
+            self._timer_backend(token, at_ns, handler, deep_copy(body_copy), name)
+        except BaseException:
+            del self._live_timers[token]
+            raise
         return token
 
     def cancel(self, token):
         if self.mode != "live" or self._depth == 0:
             raise Fault("bad_value")
-        if type(token) is not str or self._live_timers.get(token) != "armed":
+        if type(token) is not str or token not in self._live_timers:
             raise Fault("unknown_timer")
-        self._live_timers[token] = "cancelled"
+        row = self._live_timers[token]
+        if row["status"] == "fired":
+            raise Fault("cancel_fired")
+        if row["status"] != "armed":
+            raise Fault("unknown_timer")
+        row["status"] = "cancelled"
+
+    def fire_timer(self, token):
+        """Deliver an armed live timer once; ignore canceled or previously fired callbacks."""
+        with self._lock:
+            if self.mode != "live" or self._depth:
+                raise Fault("reentrant")
+            if type(token) is not str or token not in self._live_timers:
+                raise Fault("unknown_timer")
+            row = self._live_timers[token]
+            if row["status"] != "armed":
+                return False
+            row["status"] = "fired"
+            self._deliver(row["handler"], row["body"])
+            return True
 
     def stop(self, name):
         if self.mode != "live" or self._depth == 0:
@@ -288,7 +375,8 @@ class Runtime:
         self.stopped = name
 
     def state_copy(self):
-        return deep_copy(self._state)
+        with self._lock:
+            return deep_copy(self._state)
 
     def set_state(self, value):
         if self._depth == 0:
@@ -349,6 +437,7 @@ def main(rt):
             ports=set(rt.factories),
             handlers=set(rt.handlers),
             namespace=namespace,
+            backends=rt.backends,
         )
     except Refuse as err:
         _emit(path, refused(err.code, meta=err.meta, op=err.op))

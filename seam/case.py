@@ -1,12 +1,12 @@
 """Load a case file. Unknown keys are refused. Defaults are filled before the case digest."""
 
-import json
-import os
 import re
 from dataclasses import dataclass, field
 
-from seam.canon import TIMER_TOKEN_PREFIX, UINT64_MAX, digest, loads, walk
-from seam.errors import Refuse
+from seam.canon import MAX_STRING, TIMER_TOKEN_PREFIX, UINT64_MAX, digest, dumps, loads, walk
+from seam.errors import PortError, Refuse
+from seam.backend import BackendPort
+from seam.dataset import load_datasets
 from seam.ports import RecordingPort, ScriptPort, load_tape, resolve_tape, validate_match
 
 MAX_CASE = 4 * 1024 * 1024
@@ -20,11 +20,11 @@ MAX_ASSERTIONS = 1_000
 DEFAULT_MAX_EVENTS = 100_000
 DEFAULT_MAX_PORT_CALLS = 10_000
 
-SIM_NS = re.compile(r"^sim-[a-z0-9]([a-z0-9-]{0,60}[a-z0-9])?$")
-CASE_NAME = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
-IDENT = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
-TERMINAL = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
-GRADER = re.compile(r"^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)*:[A-Za-z_]\w*$")
+SIM_NS = re.compile(r"^sim-[a-z0-9]([a-z0-9-]{0,60}[a-z0-9])?\Z")
+CASE_NAME = re.compile(r"^[a-z][a-z0-9-]{0,62}\Z")
+IDENT = re.compile(r"^[a-z][a-z0-9_]{0,31}\Z")
+TERMINAL = re.compile(r"^[a-z][a-z0-9_-]{0,63}\Z")
+GRADER = re.compile(r"^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)*:[A-Za-z_]\w*\Z")
 EPOCH = "1970-01-01T00:00:00Z"
 CASE_KEYS = {
     "format",
@@ -77,6 +77,8 @@ FAULT_CODES = {
     "clock_backwards",
     "bad_value",
     "grader_error",
+    "unsupported_handler",
+    "bad_backend",
 }
 
 
@@ -121,6 +123,8 @@ class Case:
     digest: str
     normalized: dict
     meta: dict = field(default_factory=dict)
+    config: object = field(default_factory=dict)
+    provenance: dict = field(default_factory=dict)
 
 
 def _match(node):
@@ -138,23 +142,23 @@ def _assertion(item):
     if op == "port_called":
         if not keys <= {"op", "port", "times", "match"} or not {"op", "port", "times"} <= keys:
             _bad()
-        if not IDENT.match(item["port"]) or type(item["times"]) is not int or item["times"] < 0:
+        if type(item["port"]) is not str or not IDENT.match(item["port"]) or type(item["times"]) is not int or item["times"] < 0:
             _bad()
         if "match" in item:
             _match(item["match"])
     elif op == "port_not_called":
-        if keys != {"op", "port"} or not IDENT.match(item["port"]):
+        if keys != {"op", "port"} or type(item["port"]) is not str or not IDENT.match(item["port"]):
             _bad()
     elif op == "port_response":
         if keys != {"op", "port", "i", "match"}:
             _bad()
-        if not IDENT.match(item["port"]) or type(item["i"]) is not int or item["i"] < 0:
+        if type(item["port"]) is not str or not IDENT.match(item["port"]) or type(item["i"]) is not int or item["i"] < 0:
             _bad()
         _match(item["match"])
     elif op == "event_count":
         if keys != {"op", "handler", "times"}:
             _bad()
-        if not IDENT.match(item["handler"]) or type(item["times"]) is not int or item["times"] < 0:
+        if type(item["handler"]) is not str or not IDENT.match(item["handler"]) or type(item["times"]) is not int or item["times"] < 0:
             _bad()
     elif op == "timer_outcome":
         if "outcome" not in item or item["outcome"] not in ("fired", "cancelled", "dropped"):
@@ -177,7 +181,7 @@ def _assertion(item):
             _bad()
         # A `stopped` assertion may name a stop reason or a fault code: the loop
         # reports either through `stop_reason`.
-        if item["reason"] not in (STOP_REASONS | FAULT_CODES):
+        if type(item["reason"]) is not str or item["reason"] not in (STOP_REASONS | FAULT_CODES):
             _bad()
         if "terminal" in item and (type(item["terminal"]) is not str or not TERMINAL.match(item["terminal"])):
             _bad()
@@ -191,7 +195,7 @@ def _assertion(item):
         _bad()
 
 
-def normalize(raw, *, ports, handlers, namespace):
+def normalize(raw, *, ports, handlers, namespace, backends=()):
     if type(raw) is not dict:
         _bad()
     # Seed is allowed to be unsigned 64-bit, so it is checked before the int64 walk.
@@ -199,8 +203,12 @@ def normalize(raw, *, ports, handlers, namespace):
         _bad()
     body = {key: value for key, value in raw.items() if key != "seed"}
     walk(body, _bad)
-    _obj(raw, CASE_KEYS, {"format", "version", "name", "seed", "namespace", "clock", "initial_state", "arrivals", "ports", "stop"})
-    if raw["format"] != "seam-case" or type(raw["version"]) is not int or raw["version"] != 1:
+    version = raw.get("version")
+    if type(version) is not int or version not in (1, 2):
+        _bad()
+    keys = CASE_KEYS if version == 1 else CASE_KEYS | {"datasets", "config"}
+    _obj(raw, keys, {"format", "version", "name", "seed", "namespace", "clock", "initial_state", "arrivals", "ports", "stop"})
+    if raw["format"] != "seam-case":
         _bad()
     if type(raw["name"]) is not str or not CASE_NAME.match(raw["name"]):
         _bad()
@@ -209,6 +217,8 @@ def normalize(raw, *, ports, handlers, namespace):
     clock = raw["clock"]
     _obj(clock, {"start_ns", "epoch"}, {"start_ns", "epoch"})
     if clock["epoch"] != EPOCH or type(clock["start_ns"]) is not int or clock["start_ns"] < 0:
+        _bad()
+    if len(dumps(raw["initial_state"]).encode("ascii")) > MAX_STRING:
         _bad()
     if type(raw["arrivals"]) is not list or len(raw["arrivals"]) > MAX_ARRIVALS:
         _bad()
@@ -237,7 +247,15 @@ def normalize(raw, *, ports, handlers, namespace):
         mode = spec["mode"]
         if mode == "generator":
             raise Refuse("unsupported")
-        if mode == "script":
+        if mode == "backend":
+            if version != 2 or name not in backends:
+                raise Refuse("bad_backend")
+            _obj(spec, {"mode", "dataset"}, {"mode", "dataset"})
+            dataset = spec["dataset"]
+            if type(dataset) is not str or not IDENT.fullmatch(dataset):
+                raise Refuse("bad_dataset")
+            norm_ports[name] = {"mode": "backend", "dataset": dataset}
+        elif mode == "script":
             _obj(spec, {"mode", "unmatched", "replies"}, {"mode", "replies"})
             unmatched = spec.get("unmatched", "fail")
             if unmatched != "fail":
@@ -248,12 +266,18 @@ def normalize(raw, *, ports, handlers, namespace):
                 _bad()
             replies = []
             for reply in replies_in:
-                _obj(reply, {"match", "response", "repeat"}, {"match", "response"})
+                allowed = {"match", "response", "repeat"} if version == 1 else {"match", "response", "repeat", "error"}
+                _obj(reply, allowed, {"match"})
+                if ("response" in reply) == ("error" in reply):
+                    _bad()
+                if "error" in reply and (type(reply["error"]) is not str or not IDENT.fullmatch(reply["error"])):
+                    _bad()
                 repeat = reply.get("repeat", 1)
                 if repeat != "forever" and (type(repeat) is not int or repeat < 1):
                     _bad()
                 _match(reply["match"])
-                replies.append({"match": reply["match"], "response": reply["response"], "repeat": repeat})
+                value_key = "response" if "response" in reply else "error"
+                replies.append({"match": reply["match"], value_key: reply[value_key], "repeat": repeat})
             norm_ports[name] = {"mode": "script", "unmatched": unmatched, "replies": replies}
         elif mode == "recording":
             if "cutoff_ns" not in spec or type(spec.get("cutoff_ns")) is not int:
@@ -276,7 +300,7 @@ def normalize(raw, *, ports, handlers, namespace):
         {"when"},
     )
     when = stop_in["when"]
-    if when not in ("quiescence", "deadline", "terminal"):
+    if type(when) is not str or when not in ("quiescence", "deadline", "terminal"):
         _bad()
     allow = stop_in.get("allow_quiescence", False)
     if type(allow) is not bool:
@@ -301,14 +325,14 @@ def normalize(raw, *, ports, handlers, namespace):
     for item in assertions:
         _assertion(item)
     log_state = raw.get("log_state", "on_change")
-    if log_state not in ("on_change", "every_event", "end_only"):
+    if type(log_state) is not str or log_state not in ("on_change", "every_event", "end_only"):
         _bad()
     grader = raw.get("grader")
     if grader is not None and (type(grader) is not str or not GRADER.match(grader)):
         _bad()
     norm = {
         "format": "seam-case",
-        "version": 1,
+        "version": version,
         "name": raw["name"],
         "seed": raw["seed"],
         "namespace": raw["namespace"],
@@ -331,44 +355,58 @@ def normalize(raw, *, ports, handlers, namespace):
         norm["stop"]["terminal"] = terminal
     if grader is not None:
         norm["grader"] = grader
+    if version == 2:
+        norm["datasets"] = raw.get("datasets", {})
+        norm["config"] = raw.get("config", {})
     return norm
 
 
-def _compile(path, norm):
+def _compile(path, norm, backends, datasets):
     compiled = {}
     for name, spec in norm["ports"].items():
         if spec["mode"] == "script":
             replies = [
-                {"match": reply["match"], "response": reply["response"], "left": reply["repeat"]}
+                {**reply, "left": reply["repeat"]}
                 for reply in spec["replies"]
             ]
             compiled[name] = ScriptPort(replies, spec["unmatched"])
+        elif spec["mode"] == "backend":
+            dataset = spec["dataset"]
+            if dataset not in datasets:
+                raise Refuse("bad_dataset")
+            compiled[name] = BackendPort(backends[name], datasets[dataset], norm["config"])
         else:
             full = resolve_tape(path, spec["tape"])
-            visible = load_tape(full, name, spec["cutoff_ns"])
+            visible = load_tape(full, name, spec["cutoff_ns"], allow_errors=norm["version"] == 2)
             compiled[name] = RecordingPort(visible)
     return compiled
 
 
-def load_case(path, *, ports, handlers, namespace):
+def load_case(path, *, ports, handlers, namespace, backends=None):
     if type(namespace) is not str or not SIM_NS.match(namespace):
         raise Refuse("namespace")
-    if not os.path.isfile(path) or os.path.getsize(path) > MAX_CASE:
+    try:
+        with open(path, "rb") as handle:
+            text = handle.read(MAX_CASE + 1)
+    except (OSError, UnicodeError):
+        raise Refuse("bad_case") from None
+    if len(text) > MAX_CASE:
         raise Refuse("bad_case")
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            text = handle.read()
-    except UnicodeError:
-        raise Refuse("bad_case") from None
-    try:
         raw = loads(text)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
         raise Refuse("bad_case") from None
-    norm = normalize(raw, ports=set(ports), handlers=set(handlers), namespace=namespace)
+    if backends is None:
+        backends = {}
+    try:
+        norm = normalize(raw, ports=set(ports), handlers=set(handlers), namespace=namespace, backends=set(backends))
+    except RecursionError:
+        raise Refuse("bad_case") from None
     case_digest = digest(norm)
     compiled = {}
     try:
-        compiled = _compile(path, norm)
+        datasets = load_datasets(path, norm.get("datasets", {}), norm["clock"]["start_ns"])
+        compiled = _compile(path, norm, backends, datasets)
     except Refuse as err:
         err.meta.update(
             name=norm["name"],
@@ -379,6 +417,17 @@ def load_case(path, *, ports, handlers, namespace):
         )
         raise
     stop_n = norm["stop"]
+    provenance = {}
+    if norm["version"] == 2:
+        provenance["datasets"] = norm["datasets"]
+    tapes = {}
+    for name, port in compiled.items():
+        if isinstance(port, RecordingPort):
+            visible = [(request, {"error": response.code} if isinstance(response, PortError) else {"response": response})
+                       for request, response in port.visible]
+            tapes[name] = digest(visible)
+    if tapes:
+        provenance["tapes"] = tapes
     return Case(
         name=norm["name"],
         seed=norm["seed"],
@@ -400,5 +449,7 @@ def load_case(path, *, ports, handlers, namespace):
         log_state=norm["log_state"],
         digest=case_digest,
         normalized=norm,
+        config=norm.get("config", {}),
+        provenance=provenance,
         meta={"name": norm["name"], "namespace": norm["namespace"], "seed": norm["seed"], "case_digest": case_digest},
     )

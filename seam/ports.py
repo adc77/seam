@@ -4,7 +4,7 @@ import json
 import os
 
 from seam.canon import deep_copy, equal, is_any, loads, matches, walk
-from seam.errors import Fault, Refuse
+from seam.errors import ERROR_CODE, Fault, PortError, Refuse
 
 MAX_TAPE = 64 * 1024 * 1024
 _TAPE_KEYS = {"format", "version", "at_ns", "port", "request", "response"}
@@ -25,6 +25,8 @@ class ScriptPort:
             if matches(reply["match"], request):
                 if left != "forever":
                     reply["left"] = left - 1
+                if "error" in reply:
+                    raise PortError(reply["error"])
                 return deep_copy(reply["response"])
         if self.unmatched == "fail":
             raise Fault("unmatched_port")
@@ -45,6 +47,8 @@ class RecordingPort:
         if not equal(expected, request):
             raise Fault("tape_mismatch")
         self.cursor += 1
+        if isinstance(response, PortError):
+            raise PortError(response.code)
         return deep_copy(response)
 
 
@@ -60,14 +64,17 @@ def resolve_tape(case_path, tape):
     return full
 
 
-def load_tape(path, port, cutoff_ns):
+def load_tape(path, port, cutoff_ns, *, allow_errors=False):
     """Visible lines are those with `at_ns <= cutoff`. Later lines are not stored."""
-    size = os.path.getsize(path)
-    if size > MAX_TAPE:
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read(MAX_TAPE + 1)
+    except OSError:
+        raise Refuse("bad_case") from None
+    if len(data) > MAX_TAPE:
         raise Refuse("bad_case")
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            text = handle.read()
+        text = data.decode("utf-8")
     except UnicodeError:
         raise Refuse("tape_torn") from None
     visible = []
@@ -77,14 +84,25 @@ def load_tape(path, port, cutoff_ns):
         if raw.strip() == "":
             raise Refuse("bad_case")
         try:
-            obj = loads(raw)
+            obj = json.loads(raw)
         except json.JSONDecodeError:
             raise Refuse("tape_torn") from None
+        except (ValueError, RecursionError):
+            raise Refuse("bad_case") from None
         except Refuse:
             raise
-        if type(obj) is not dict or set(obj) != _TAPE_KEYS:
+        if type(obj) is not dict or "at_ns" not in obj or type(obj["at_ns"]) is not int:
             raise Refuse("bad_case")
-        if obj["format"] != "seam-tape" or obj["version"] != 1 or type(obj["version"]) is not int:
+        if obj["at_ns"] > cutoff_ns:
+            continue
+        try:
+            obj = loads(raw)
+        except RecursionError:
+            raise Refuse("bad_case") from None
+        expected = _TAPE_KEYS if "response" in obj else (_TAPE_KEYS - {"response"}) | {"error"}
+        if set(obj) != expected:
+            raise Refuse("bad_case")
+        if obj["format"] != "seam-tape" or obj["version"] not in (1, 2) or type(obj["version"]) is not int:
             raise Refuse("bad_case")
         at = obj["at_ns"]
         if type(at) is not int:
@@ -94,18 +112,21 @@ def load_tape(path, port, cutoff_ns):
             raise Refuse("bad_case")
 
         try:
-            walk(obj["request"], on_bad)
-            walk(obj["response"], on_bad)
-        except Refuse:
-            raise
+            walk(obj, on_bad)
+        except RecursionError:
+            raise Refuse("bad_case") from None
+        if type(obj["port"]) is not str or not ERROR_CODE.fullmatch(obj["port"]):
+            raise Refuse("bad_case")
+        if "error" in obj and (not allow_errors or obj["version"] != 2 or type(obj["error"]) is not str
+                               or not ERROR_CODE.fullmatch(obj["error"])):
+            raise Refuse("bad_case")
         if obj["port"] != port:
-            continue
-        if at > cutoff_ns:
             continue
         if last_at is not None and at < last_at:
             raise Refuse("tape_unsorted")
         last_at = at
-        visible.append((obj["request"], obj["response"]))
+        response = obj["response"] if "response" in obj else PortError(obj["error"])
+        visible.append((obj["request"], response))
     return visible
 
 
