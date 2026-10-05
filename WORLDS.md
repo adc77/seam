@@ -36,7 +36,7 @@ The factory receives `(WorldContext, dataset_copy, config_copy)` and runs lazily
 `World(handlers, snapshot, restore, close=None)` requires synchronous callbacks:
 
 - `snapshot()` returns all deterministic dependency state as Seam JSON, without changing it.
-- `restore(snapshot_copy)` restores that state and returns `None`.
+- `restore(snapshot_copy)` restores that state and returns `None`; Seam checks the snapshot round trip before delivering new work.
 - `close()` releases resources and returns `None`. It runs once for each initialized world at completion, pause, or fault, including restore failures. Cleanup failures fail the run.
 
 Snapshot, restore, and close callbacks cannot draw run randomness. Factories may use the shared run RNG and clock: restoration reconstructs them at their original initialization time and RNG position, then calls `restore` at the checkpoint time without advancing the restored global RNG. Factories must not rely on state outside pinned inputs and supplied context. Snapshot purity and complete state coverage remain adapter responsibilities.
@@ -92,6 +92,8 @@ assert resumed.returncode == 0, resumed.artifact
 References are confined to the case directory, including symlink resolution, and pin raw bytes. Documents have a closed schema, checksum, 32 MiB limit, validated scheduler/history/cursor metadata, and SDK version. Workload identity pins seed, config, initial state, dataset references, arrivals, stop budgets, logging mode, and visible tape contents. Only assertions, grader, pause count, and checkpoint reference may change on resume.
 
 Resume also pins product and SDK Python source hashes, Python version, and the launcher's child-environment hash. A different workload or source/environment identity refuses before product callbacks. Use `run_product` consistently; direct `python -m myproduct` derives identity from its ambient environment instead. Direct script execution without a module identity refuses checkpointing.
+
+The supervisor requires checkpoint state/history/timers/initialized-world snapshots to match the paused artifact and its launch identity. A pause cannot be relabeled as a completed pass. Loader validation also refuses metadata that marks a successfully called world as unused.
 
 A correctly implemented world restores the exact uninterrupted behavior digest and full history. Case digest and checkpoint provenance differ because they identify operational pause/resume inputs. Checkpoints are not editable counterfactual starting snapshots; changing configuration or inputs requires a fresh case.
 

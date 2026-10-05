@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from collections.abc import Callable
 
-from seam.canon import deep_copy
+from seam.canon import deep_copy, equal
 from seam.errors import Fault, PortError, Refuse
 from seam.rng import Rng
 
@@ -159,6 +159,8 @@ class WorldManager:
         self._load(frame["bootstrap"])
         if self._frozen_call(self.client.restore, deep_copy(frame["snapshot"])) is not None:
             raise Fault("bad_backend", op="world.restore_result")
+        if not equal(self.state(), frame["snapshot"]):
+            raise Fault("bad_backend", op="world.restore_state")
 
     def close(self):
         if self.closed:

@@ -14,7 +14,7 @@ import sys
 import tempfile
 
 from seam.artifact import MAX_ARTIFACT, refused, write_artifact
-from seam.canon import digest, loads
+from seam.canon import digest, equal, loads
 from seam.case import MAX_CASE, normalize
 from seam.errors import Refuse
 from seam.version import __version__
@@ -91,7 +91,39 @@ def _case_digest(path, namespace):
         return None
 
 
-def _validate(art, returncode, namespace, case_digest):
+def _checkpoint_matches_artifact(art):
+    from seam.checkpoint import validate_document
+
+    payload = validate_document(art["checkpoint"])["payload"]
+    if type(art["clock"]) is not dict or not equal(payload["at_ns"], art["clock"].get("end_ns")):
+        return False
+    if not equal(payload["state"], art["final_state"]):
+        return False
+    for key in ("events", "port_calls", "state_snapshots"):
+        if type(payload[key]) is not list or not equal(payload[key], art[key]):
+            return False
+    if type(payload["timers"]) is not list:
+        return False
+    for timer in payload["timers"]:
+        keys = {"token", "handler", "fire_at_ns", "outcome", "seq"}
+        if type(timer) is not dict or set(timer) != keys | ({"name"} if "name" in timer else set()):
+            return False
+    timers = [{key: value for key, value in row.items() if key != "seq"} for row in payload["timers"]]
+    if not equal(timers, art["timers"]):
+        return False
+    worlds = payload["worlds"]
+    states = art.get("world_states", {})
+    if type(worlds) is not dict or type(states) is not dict or set(worlds) != set(states):
+        return False
+    for name, frame in worlds.items():
+        if type(frame) is not dict or type(frame.get("initialized")) is not bool:
+            return False
+        if frame["initialized"] and ("snapshot" not in frame or not equal(frame["snapshot"], states[name])):
+            return False
+    return True
+
+
+def _validate(art, returncode, namespace, case_digest, identity=None):
     if (
         type(art) is not dict
         or art.get("format") != "seam-artifact"
@@ -129,9 +161,15 @@ def _validate(art, returncode, namespace, case_digest):
     if returncode == 4:
         if art["version"] != 3 or art.get("stop_reason") != "checkpoint":
             return False
-        from seam.checkpoint import validate_document
-
-        validate_document(art.get("checkpoint"))
+    if "checkpoint" in art:
+        if art["version"] != 3 or returncode == 0 or art.get("stop_reason") != "checkpoint":
+            return False
+        if not _checkpoint_matches_artifact(art):
+            return False
+        if identity is not None and art["checkpoint"]["identity"] != identity:
+            return False
+    elif art.get("stop_reason") == "checkpoint":
+        return False
     body = {key: art[key] for key in DIGEST_KEYS}
     for key in ("terminal", "backend_states", "world_states"):
         if key in art:
@@ -222,7 +260,13 @@ def run_product(module, case, namespace, artifact, *, timeout=DEFAULT_TIMEOUT, e
                 with open(child_artifact, "rb") as handle:
                     data = handle.read(MAX_ARTIFACT + 1)
                 art = loads(data) if len(data) <= MAX_ARTIFACT else None
-                valid = _validate(art, proc.returncode, namespace, case_digest)
+                identity = None
+                if type(art) is dict and "checkpoint" in art:
+                    identity = {"product_sha256": provenance["product"]["sha256"],
+                                "sdk_sha256": _product_digest("seam", child_env.get("PYTHONPATH", "")),
+                                "environment_sha256": provenance["environment_sha256"],
+                                "python": provenance["python"]}
+                valid = _validate(art, proc.returncode, namespace, case_digest, identity)
             except (Refuse, OSError, ValueError, RecursionError, TypeError):
                 valid = False
             if valid:

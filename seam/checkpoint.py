@@ -12,6 +12,7 @@ from seam.dataset import SHA256
 from seam.errors import Fault, PortError, Refuse
 from seam.ports import RecordingPort, ScriptPort, resolve_tape
 from seam.version import __version__
+from seam.world import WorldPort
 
 MAX_CHECKPOINT = 32 * 1024 * 1024
 DOCUMENT_KEYS = {"format", "version", "sdk_version", "identity", "workload_digest", "payload", "digest"}
@@ -201,6 +202,7 @@ def validate_payload(payload, case):
         _object(call, {"i", "during", "at_ns", "port", "request", "response", "source"}
                 | ({"error"} if "error" in call else set()))
         _integer(call["during"], maximum=len(events) - 1)
+        _integer(call["at_ns"], case.start_ns, payload["at_ns"])
         if events[call["during"]]["kind"] != "deliver":
             _bad()
         if call["at_ns"] != events[call["during"]]["at_ns"] or call["source"] != case.ports[call["port"]].source:
@@ -331,7 +333,13 @@ def validate_payload(payload, case):
                 _bad()
     if type(payload["worlds"]) is not dict or set(payload["worlds"]) != set(case.worlds):
         _bad()
-    for state in payload["worlds"].values():
+    world_calls = {name: [] for name in case.worlds}
+    world_names = {world: name for name, world in case.worlds.items()}
+    for call in payload["port_calls"]:
+        port = case.ports[call["port"]]
+        if isinstance(port, WorldPort):
+            world_calls[world_names[port.manager]].append(call)
+    for name, state in payload["worlds"].items():
         if type(state) is not dict or type(state.get("initialized")) is not bool:
             _bad()
         if state["initialized"]:
@@ -339,8 +347,12 @@ def validate_payload(payload, case):
             _object(state["bootstrap"], {"at_ns", "rng_counter"})
             _integer(state["bootstrap"]["at_ns"], case.start_ns, payload["at_ns"])
             _integer(state["bootstrap"]["rng_counter"], maximum=payload["rng_counter"])
+            if state["bootstrap"]["at_ns"] not in {call["at_ns"] for call in world_calls[name]}:
+                _bad()
         else:
             _object(state, {"initialized"})
+            if any("error" not in call for call in world_calls[name]):
+                _bad()
 
 
 def _validate_replayed_call(port, call):
