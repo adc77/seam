@@ -106,7 +106,7 @@ class BoundaryTest(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(art["final_state"], {"size": 4})
-            self.assertIn(str(fixture), art["fs_reads"])
+            self.assertIn(str(fixture.resolve()), art["fs_reads"])
             proc, art = simulate(product("def go(ctx, body):\n    _real_stat(FIXTURE)", setup))
             self.assertEqual(proc.returncode, 2)
             self.assertEqual(art["fault"]["code"], "file_access")
