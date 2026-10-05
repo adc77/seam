@@ -2,7 +2,7 @@
 
 Working title. A generalized simulation SDK: run a product's own handlers in a separate seeded process against scripts, cut-off recordings, or isolated stateful backends initialized from production exports. Glass is one consumer, not the SDK's domain.
 
-The original v1 spec is [PLAN.md](PLAN.md); the implemented v2 extension and its limits are in [SIMULATION.md](SIMULATION.md). Apache-2.0.
+The original v1 spec is [PLAN.md](PLAN.md); export-backed v2 is in [SIMULATION.md](SIMULATION.md), and opt-in v3 shared dependency worlds and checkpoints are in [WORLDS.md](WORLDS.md). Apache-2.0.
 
 ```shell
 python3 -m unittest discover -s tests -t .
@@ -20,6 +20,7 @@ One artifact file, one sha256 digest, one exit code.
 | 1 | the run completed but an assertion or the grader failed |
 | 2 | the run faulted: a guard tripped, a timer misfired, a tape ran out |
 | 3 | the run refused to start: bad case, bad environment, or a second run in one process |
+| 4 | a v3 simulation paused cleanly at a checkpoint; it has not completed |
 
 The digest covers the clock, the events, the port calls, the state, and the stop reason. It does not cover the grader or the assertions, so tightening an expectation never changes the digest of the run it grades.
 
@@ -86,3 +87,5 @@ This matters: string hashing is salted per interpreter, so iterating a `set` in 
 `sim_env` remains a lower-level launcher helper, but inherits the parent environment and does not supervise a process. A caught simulation `Fault` still fails the run. Expected dependency failures use `PortError`, which scripts and tapes can replay without poisoning a recovered run. Async and generator handlers are rejected, not silently discarded.
 
 The checkout proof in `seam/proof/checkout/` preserves the v1 golden digests. The inventory proof in `seam/proof/inventory/` initializes an isolated in-memory SQLite database from a pinned export: two reservations see each other's writes, and each run starts fresh. See [the adoption guide](SIMULATION.md) for the backend API.
+
+The shared-store proof in `seam/proof/shared_store/` routes separate write/read ports through one SQLite world and resumes pending timers in fresh processes. See [worlds and checkpoints](WORLDS.md) for the lifecycle contract and exact-resume limits.

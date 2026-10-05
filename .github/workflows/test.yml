@@ -89,6 +89,29 @@ jobs:
           assert result.artifact["backend_states"] == {"stock": {"book": 1, "pen": 1}}
           print("installed inventory proof ok")
           PY
+          python - <<'PY'
+          import json, pathlib, tempfile
+          import seam
+          from seam import checkpoint_ref, run_product, write_checkpoint
+          installed = pathlib.Path(seam.__file__).parent / "proof/shared_store/cases"
+          with tempfile.TemporaryDirectory() as directory:
+              root = pathlib.Path(directory)
+              (root / "store.json").write_bytes((installed / "store.json").read_bytes())
+              base = json.loads((installed / "shared.json").read_text())
+              def run(case, name):
+                  path = root / f"{name}.json"
+                  path.write_text(json.dumps(case))
+                  return run_product("seam.proof.shared_store", str(path), base["namespace"], str(root / f"{name}-out.json"))
+              baseline = run(base, "baseline")
+              assert baseline.returncode == 0, baseline.artifact
+              paused = run({**base, "checkpoint_after": 1, "assertions": []}, "paused")
+              assert paused.returncode == 4, paused.artifact
+              write_checkpoint(root / "checkpoint.json", paused.artifact["checkpoint"])
+              resumed = run({**base, "resume": checkpoint_ref(root / "checkpoint.json")}, "resumed")
+              assert resumed.returncode == 0, resumed.artifact
+              assert resumed.artifact["digest"] == baseline.artifact["digest"]
+              print("installed shared-world checkpoint proof ok")
+          PY
 
   guard:
     name: guard closes on ${{ matrix.os }}

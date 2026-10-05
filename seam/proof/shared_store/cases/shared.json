@@ -1,0 +1,35 @@
+{
+  "format": "seam-case",
+  "version": 3,
+  "name": "shared-store",
+  "seed": 1842,
+  "namespace": "sim-shared-store",
+  "clock": {"start_ns": 0, "epoch": "1970-01-01T00:00:00Z"},
+  "initial_state": {},
+  "config": {},
+  "datasets": {
+    "store": {
+      "path": "store.json",
+      "sha256": "c62c4b62a6a6bc3d2c28e921c4e755cde260a2aa6b9148a8f5798c9c43cee257",
+      "as_of_ns": 0
+    }
+  },
+  "worlds": {"ledger": {"dataset": "store"}},
+  "ports": {
+    "write": {"mode": "world", "world": "ledger"},
+    "read": {"mode": "world", "world": "ledger"}
+  },
+  "arrivals": [
+    {"at_ns": 0, "handler": "write", "body": {"delta": 10}},
+    {"at_ns": 10, "handler": "observe", "body": {}}
+  ],
+  "stop": {"when": "quiescence"},
+  "assertions": [
+    {"op": "state_is", "path": "final.balance", "value": 10},
+    {"op": "state_is", "path": "done", "value": true},
+    {"op": "timer_outcome", "name": "read-once", "outcome": "fired"},
+    {"op": "timer_outcome", "name": "due-once", "outcome": "cancelled"},
+    {"op": "timer_outcome", "name": "cancelled-once", "outcome": "cancelled"},
+    {"op": "timer_outcome", "name": "done-once", "outcome": "fired"}
+  ]
+}

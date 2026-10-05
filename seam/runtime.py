@@ -132,6 +132,8 @@ class Runtime:
         self.handlers = {}
         self.factories = {}
         self.backends = {}
+        self.worlds = {}
+        self._world_ports = {}
         self._depth = 0
         self._state = {} if initial_state is None else replace_at({}, "", initial_state)
         self._redact = None
@@ -161,10 +163,24 @@ class Runtime:
 
     def sim_port(self, name, factory):
         """Register a simulation-only backend factory for an existing product port."""
-        if self.mode is not None or name not in self.factories or name in self.backends or not callable(factory):
+        if (self.mode is not None or name not in self.factories or name in self.backends
+                or name in self._world_ports or not callable(factory)):
             raise Refuse("bad_backend")
         require_sync(factory)
         self.backends[name] = factory
+
+    def sim_world(self, name, factory, *, ports):
+        """Register one simulation dependency world shared by its named product ports."""
+        if (self.mode is not None or type(name) is not str or not IDENT.fullmatch(name)
+                or name in self.worlds or not callable(factory) or type(ports) not in (tuple, list)):
+            raise Refuse("bad_backend")
+        if (not ports or any(type(port) is not str or port not in self.factories
+                or port in self.backends or port in self._world_ports for port in ports)
+                or len(set(ports)) != len(ports)):
+            raise Refuse("bad_backend")
+        require_sync(factory)
+        self.worlds[name] = (factory, tuple(ports))
+        self._world_ports.update({port: name for port in ports})
 
     def redact(self, fn):
         if not callable(fn):
@@ -438,6 +454,7 @@ def main(rt):
             handlers=set(rt.handlers),
             namespace=namespace,
             backends=rt.backends,
+            worlds=rt.worlds,
         )
     except Refuse as err:
         _emit(path, refused(err.code, meta=err.meta, op=err.op))

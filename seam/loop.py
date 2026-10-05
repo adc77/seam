@@ -10,6 +10,8 @@ from seam.errors import Fault, PortError, Refuse, fault_scope
 from seam.guard import _handler_scope
 from seam.queue import Queue
 from seam.backend import BackendPort
+from seam.ports import RecordingPort, ScriptPort
+from seam.world import WorldPort
 from seam.rng import Rng
 
 
@@ -38,6 +40,8 @@ class Result:
     backend_states: dict | None = None
     provenance: dict | None = None
     version: int = 1
+    world_states: dict | None = None
+    checkpoint: dict | None = None
 
 
 class Engine:
@@ -65,6 +69,33 @@ class Engine:
         self._stop_name = None
         self.fault = None
         self.result = None
+        self.delivered_sequences = []
+        self._segment_start = 0
+        for world in self.case.worlds.values():
+            world.bind(self)
+        if case.resume is not None:
+            payload = case.resume["payload"]
+            self.clock.jump(payload["at_ns"])
+            self.rng.counter = payload["rng_counter"]
+            self.state = deep_copy(payload["state"])
+            self._finger = dumps(self.state)
+            self.queue.restore(payload["queue"])
+            self._timers = deep_copy(payload["timers"])
+            self._by_token = {row["token"]: row for row in self._timers}
+            self._token_n = payload["token_n"]
+            self.events = deep_copy(payload["events"])
+            self.port_calls = deep_copy(payload["port_calls"])
+            self.snapshots = deep_copy(payload["state_snapshots"])
+            self.delivered = payload["delivered"]
+            self.delivered_sequences = list(payload["delivered_sequences"])
+            self._segment_start = self.delivered
+            for name, state in payload["ports"].items():
+                port = case.ports[name]
+                if isinstance(port, ScriptPort):
+                    for reply, left in zip(port.replies, state["left"]):
+                        reply["left"] = left
+                elif isinstance(port, RecordingPort):
+                    port.cursor = state["cursor"]
 
     def fail(self, fault):
         if self.fault is None:
@@ -144,7 +175,7 @@ class Engine:
             self.port_calls[-1]["error"] = err.code
             raise
         except Fault as err:
-            if isinstance(script, BackendPort) or err.code in ("unmatched_port", "tape_mismatch", "tape_exhausted"):
+            if isinstance(script, (BackendPort, WorldPort)) or err.code in ("unmatched_port", "tape_mismatch", "tape_exhausted"):
                 self._log_call(port, request_copy, None, script.source)
             raise Fault(err.code, op=err.op, during=self._during, exc_type=err.exc_type) from None
         stored = deep_copy(response)
@@ -334,7 +365,8 @@ class Engine:
     def _timer_view(self):
         view = []
         for row in self._timers:
-            outcome = "dropped" if row["outcome"] == "armed" else row["outcome"]
+            outcome = ("dropped" if row["outcome"] == "armed" and self.stop_reason != "checkpoint"
+                       else row["outcome"])
             item = {
                 "token": row["token"],
                 "handler": row["handler"],
@@ -348,6 +380,8 @@ class Engine:
 
     def _seal_result(self):
         backend_states = {}
+        world_states = {}
+        checkpoint = None
         try:
             with _handler_scope(), fault_scope(self._handler_fault):
                 for name, port in self.case.ports.items():
@@ -357,6 +391,29 @@ class Engine:
             self.fail(err)
         except BaseException as err:
             self.fail(Fault("bad_backend", exc_type=type(err).__name__))
+        for name in sorted(self.case.worlds):
+            try:
+                with _handler_scope(), fault_scope(self._handler_fault):
+                    world_states[name] = self.case.worlds[name].state()
+            except Fault as err:
+                self.fail(err)
+            except BaseException as err:
+                self.fail(Fault("bad_backend", exc_type=type(err).__name__))
+        if self.stop_reason == "checkpoint" and self.fault is None:
+            try:
+                from seam.checkpoint import capture
+
+                checkpoint = capture(self, world_states)
+            except Refuse as err:
+                self.fail(Fault("bad_value", op=err.code))
+        for name in sorted(self.case.worlds):
+            try:
+                with _handler_scope(), fault_scope(self._handler_fault):
+                    self.case.worlds[name].close()
+            except Fault as err:
+                self.fail(err)
+            except BaseException as err:
+                self.fail(Fault("bad_backend", exc_type=type(err).__name__))
         self.result = Result(
             name=self.case.name,
             namespace=self.case.namespace,
@@ -375,17 +432,29 @@ class Engine:
             backend_states=backend_states,
             provenance=self.case.provenance,
             version=self.case.normalized["version"],
+            world_states=world_states,
+            checkpoint=checkpoint if self.fault is None else None,
         )
 
     def run(self):
-        for item in self.case.arrivals:
-            self.queue.push_arrival(item["at_ns"], item["handler"], item["body"])
+        if self.case.resume is None:
+            for item in self.case.arrivals:
+                self.queue.push_arrival(item["at_ns"], item["handler"], item["body"])
+        else:
+            try:
+                with _handler_scope(), fault_scope(self._handler_fault):
+                    for name in sorted(self.case.worlds):
+                        self.case.worlds[name].restore(self.case.resume["payload"]["worlds"][name])
+            except Fault as err:
+                self.fail(err)
+            except BaseException as err:
+                self.fail(Fault("bad_backend", exc_type=type(err).__name__))
         while self.fault is None:
             nxt = self.queue.peek()
             if nxt is None:
                 self._finish_empty()
                 break
-            at_ns, _seq, handler, body, token = nxt
+            at_ns, seq, handler, body, token = nxt
             deadline = self.case.stop.deadline_ns
             if deadline is not None and at_ns > deadline:
                 self.stop_reason = "deadline"
@@ -399,11 +468,16 @@ class Engine:
                 break
             self.clock.jump(at_ns)
             self.delivered += 1
+            self.delivered_sequences.append(seq)
             self._deliver(at_ns, handler, body, token)
             if self.fault is not None:
                 break
             if self._stop_flag:
                 self._resolve_stop(self._during)
+                break
+            if (self.case.checkpoint_after is not None
+                    and self.delivered - self._segment_start >= self.case.checkpoint_after):
+                self.stop_reason = "checkpoint"
                 break
         if self.stop_reason is None and self.fault is not None:
             self.stop_reason = self.fault.code

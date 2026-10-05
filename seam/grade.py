@@ -153,7 +153,7 @@ def finish(result, case):
     result.fs_reads = POLICY.seen_reads()
     result.digest = digest(digest_body(result))
     result.assertions = check_all(assemble(result), case.assertions)
-    result.status = "failed" if _failed(result) else "passed"
+    result.status = "failed" if _failed(result) else ("paused" if result.checkpoint is not None else "passed")
     if case.grader:
         def post_fault(err):
             if result.loop_fault is None and result.post_fault is None:
@@ -178,11 +178,13 @@ def finish(result, case):
         except BaseException as err:
             if result.loop_fault is None and result.post_fault is None:
                 result.post_fault = Fault("grader_error", exc_type=type(err).__name__)
-    result.status = "failed" if _failed(result) else "passed"
+    result.status = "failed" if _failed(result) else ("paused" if result.checkpoint is not None else "passed")
     return assemble(result)
 
 
 def exit_code(result):
+    if result.status == "paused":
+        return 4
     if result.status == "passed":
         return 0
     if result.loop_fault is not None:

@@ -81,7 +81,10 @@ def _case_digest(path, namespace):
                 return None
             handlers.append(arrival["handler"])
         norm = normalize(
-            raw, ports=raw["ports"], handlers=handlers, namespace=namespace, backends=raw["ports"]
+            raw, ports=raw["ports"], handlers=handlers, namespace=namespace, backends=raw["ports"],
+            worlds={name: (None, tuple(port for port, spec in raw["ports"].items()
+                                      if type(spec) is dict and spec.get("world") == name))
+                    for name in raw.get("worlds", {})},
         )
         return digest(norm)
     except (Refuse, OSError, ValueError, TypeError, RecursionError):
@@ -93,7 +96,7 @@ def _validate(art, returncode, namespace, case_digest):
         type(art) is not dict
         or art.get("format") != "seam-artifact"
         or type(art.get("version")) is not int
-        or art["version"] not in (1, 2)
+        or art["version"] not in (1, 2, 3)
     ):
         return False
     if type(art.get("provenance", {})) is not dict:
@@ -105,9 +108,8 @@ def _validate(art, returncode, namespace, case_digest):
             and type(art.get("fault")) is dict
             and type(art["fault"].get("code")) is str
         )
-    if returncode not in (0, 1, 2) or art.get("status") != (
-        "passed" if returncode == 0 else "failed"
-    ):
+    status = "passed" if returncode == 0 else ("paused" if returncode == 4 else "failed")
+    if returncode not in (0, 1, 2, 4) or art.get("status") != status:
         return False
     if (
         case_digest is None
@@ -117,15 +119,21 @@ def _validate(art, returncode, namespace, case_digest):
         return False
     if not all(key in art for key in DIGEST_KEYS):
         return False
-    if returncode == 0:
+    if returncode in (0, 4):
         if "fault" in art or art.get("grader"):
             return False
         if any(
             type(row) is not dict or row.get("ok") is not True for row in art.get("assertions", [])
         ):
             return False
+    if returncode == 4:
+        if art["version"] != 3 or art.get("stop_reason") != "checkpoint":
+            return False
+        from seam.checkpoint import validate_document
+
+        validate_document(art.get("checkpoint"))
     body = {key: art[key] for key in DIGEST_KEYS}
-    for key in ("terminal", "backend_states"):
+    for key in ("terminal", "backend_states", "world_states"):
         if key in art:
             body[key] = art[key]
     if returncode == 2:
@@ -180,6 +188,8 @@ def run_product(module, case, namespace, artifact, *, timeout=DEFAULT_TIMEOUT, e
             SEAM_CASE=os.path.abspath(case),
             SEAM_NAMESPACE=namespace,
             SEAM_ARTIFACT=child_artifact,
+            SEAM_PRODUCT_SHA256=provenance["product"]["sha256"],
+            SEAM_ENVIRONMENT_SHA256=provenance["environment_sha256"],
         )
         with tempfile.TemporaryFile() as stderr_file:
             proc = subprocess.Popen(

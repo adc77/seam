@@ -45,3 +45,18 @@ class Queue:
             return None
         heapq.heappop(self._heap)
         return item
+
+    def snapshot(self):
+        """Retain pending work and sequence numbering at a flushed handler boundary."""
+        if self.side:
+            raise RuntimeError("Cannot checkpoint an unflushed scheduler")
+        return {"next_seq": self._seq,
+                "entries": [list(item) for item in sorted(self._heap) if item[1] not in self._cancelled]}
+
+    def restore(self, snapshot):
+        """Restore an already-validated scheduler snapshot without renumbering work."""
+        self._seq = snapshot["next_seq"]
+        self._heap = [tuple(item) for item in snapshot["entries"]]
+        heapq.heapify(self._heap)
+        self._cancelled.clear()
+        self.side.clear()
