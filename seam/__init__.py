@@ -10,8 +10,20 @@ from seam.runtime import Runtime, in_sim, main, sim_env
 from seam.runner import run_product
 from seam.version import __version__
 from seam.world import World, WorldContext
+from seam.capture import (
+    CaptureError, capture_bundle, capture_source, read_capture, run_capture,
+    validate_capture, write_capture_case, write_capture_json,
+)
 
 __all__ = [
+    "CaptureError",
+    "capture_bundle",
+    "capture_source",
+    "read_capture",
+    "run_capture",
+    "validate_capture",
+    "write_capture_case",
+    "write_capture_json",
     "Fault",
     "Backend",
     "World",

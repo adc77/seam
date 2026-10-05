@@ -51,7 +51,7 @@ class Engine:
         self.handlers = rt.handlers
         self.clock = VirtualClock(case.start_ns)
         self.rng = Rng(case.seed)
-        self.queue = Queue()
+        self.queue = Queue(timers_first=case.normalized.get("same_time_order") == "timers_first")
         self.state = deep_copy(case.initial_state)
         self._finger = dumps(self.state)
         self.events = []
