@@ -1,10 +1,9 @@
 """Load a case file. Unknown keys are refused. Defaults are filled before the case digest."""
 
-import os
 import re
 from dataclasses import dataclass, field
 
-from seam.canon import TIMER_TOKEN_PREFIX, UINT64_MAX, digest, loads, walk
+from seam.canon import MAX_STRING, TIMER_TOKEN_PREFIX, UINT64_MAX, digest, dumps, loads, walk
 from seam.errors import PortError, Refuse
 from seam.backend import BackendPort
 from seam.dataset import load_datasets
@@ -21,11 +20,11 @@ MAX_ASSERTIONS = 1_000
 DEFAULT_MAX_EVENTS = 100_000
 DEFAULT_MAX_PORT_CALLS = 10_000
 
-SIM_NS = re.compile(r"^sim-[a-z0-9]([a-z0-9-]{0,60}[a-z0-9])?$")
-CASE_NAME = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
-IDENT = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
-TERMINAL = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
-GRADER = re.compile(r"^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)*:[A-Za-z_]\w*$")
+SIM_NS = re.compile(r"^sim-[a-z0-9]([a-z0-9-]{0,60}[a-z0-9])?\Z")
+CASE_NAME = re.compile(r"^[a-z][a-z0-9-]{0,62}\Z")
+IDENT = re.compile(r"^[a-z][a-z0-9_]{0,31}\Z")
+TERMINAL = re.compile(r"^[a-z][a-z0-9_-]{0,63}\Z")
+GRADER = re.compile(r"^[A-Za-z_][\w]*(\.[A-Za-z_][\w]*)*:[A-Za-z_]\w*\Z")
 EPOCH = "1970-01-01T00:00:00Z"
 CASE_KEYS = {
     "format",
@@ -219,6 +218,8 @@ def normalize(raw, *, ports, handlers, namespace, backends=()):
     _obj(clock, {"start_ns", "epoch"}, {"start_ns", "epoch"})
     if clock["epoch"] != EPOCH or type(clock["start_ns"]) is not int or clock["start_ns"] < 0:
         _bad()
+    if len(dumps(raw["initial_state"]).encode("ascii")) > MAX_STRING:
+        _bad()
     if type(raw["arrivals"]) is not list or len(raw["arrivals"]) > MAX_ARRIVALS:
         _bad()
     arrivals = []
@@ -384,20 +385,23 @@ def _compile(path, norm, backends, datasets):
 def load_case(path, *, ports, handlers, namespace, backends=None):
     if type(namespace) is not str or not SIM_NS.match(namespace):
         raise Refuse("namespace")
-    if not os.path.isfile(path) or os.path.getsize(path) > MAX_CASE:
-        raise Refuse("bad_case")
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            text = handle.read()
+        with open(path, "rb") as handle:
+            text = handle.read(MAX_CASE + 1)
     except (OSError, UnicodeError):
         raise Refuse("bad_case") from None
+    if len(text) > MAX_CASE:
+        raise Refuse("bad_case")
     try:
         raw = loads(text)
     except (ValueError, RecursionError):
         raise Refuse("bad_case") from None
     if backends is None:
         backends = {}
-    norm = normalize(raw, ports=set(ports), handlers=set(handlers), namespace=namespace, backends=set(backends))
+    try:
+        norm = normalize(raw, ports=set(ports), handlers=set(handlers), namespace=namespace, backends=set(backends))
+    except RecursionError:
+        raise Refuse("bad_case") from None
     case_digest = digest(norm)
     compiled = {}
     try:

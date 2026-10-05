@@ -6,7 +6,7 @@ from copy import deepcopy
 from seam.artifact import assemble, digest_body
 from seam.canon import digest, equal, matches
 from seam.errors import Fault, fault_scope
-from seam.guard import trusted
+from seam.guard import _handler_scope, trusted
 
 
 def _port_calls(art, port):
@@ -21,11 +21,12 @@ def _lookup(state, path):
         if type(cur) is dict and seg in cur:
             cur = cur[seg]
             continue
-        if type(cur) is list and seg.isdigit() and str(int(seg)) == seg:
-            i = int(seg)
-            if 0 <= i < len(cur):
-                cur = cur[i]
-                continue
+        if type(cur) is list and seg.isascii() and seg.isdigit() and not (len(seg) > 1 and seg[0] == "0"):
+            if len(seg) <= len(str(len(cur))):
+                i = int(seg)
+                if i < len(cur):
+                    cur = cur[i]
+                    continue
         return False, None
     return True, cur
 
@@ -160,7 +161,7 @@ def finish(result, case):
 
         try:
             fn = _load_grader(case.grader)
-            with fault_scope(post_fault):
+            with _handler_scope(), fault_scope(post_fault):
                 out = fn(deepcopy(assemble(result)))
                 from seam.runtime import require_sync_result
 

@@ -69,7 +69,7 @@ def loads(text):
         raise
     except json.JSONDecodeError:
         raise
-    except (UnicodeError, ValueError):
+    except (UnicodeError, ValueError, RecursionError):
         raise Refuse("bad_case") from None
 
 
@@ -103,6 +103,7 @@ def walk(value, on_bad):
             if type(key) is not str:
                 on_bad()
                 return
+            walk(key, on_bad)
             walk(item, on_bad)
         return
     on_bad()
@@ -114,8 +115,11 @@ def deep_copy(value, *, fault=True):
             raise Fault("bad_value")
         raise Refuse("bad_case")
 
-    walk(value, on_bad)
-    return json.loads(dumps(value))
+    try:
+        walk(value, on_bad)
+        return json.loads(dumps(value))
+    except RecursionError:
+        on_bad()
 
 
 def equal(left, right):

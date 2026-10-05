@@ -144,7 +144,7 @@ class Engine:
             self.port_calls[-1]["error"] = err.code
             raise
         except Fault as err:
-            if err.code in ("unmatched_port", "tape_mismatch", "tape_exhausted"):
+            if isinstance(script, BackendPort) or err.code in ("unmatched_port", "tape_mismatch", "tape_exhausted"):
                 self._log_call(port, request_copy, None, script.source)
             raise Fault(err.code, op=err.op, during=self._during, exc_type=err.exc_type) from None
         stored = deep_copy(response)

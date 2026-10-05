@@ -107,9 +107,12 @@ class Factory:
             raise Refuse("live_factory_called")
         if self.client is None:
             self.calls += 1
-            self.client = self.fn()
-            require_sync_result(self.client)
-            require_sync(self.client, fault=True)
+            client = self.fn()
+            require_sync_result(client)
+            require_sync(client, fault=True)
+            if not callable(client):
+                raise Fault("bad_value")
+            self.client = client
         return self.client
 
     def __call__(self):
@@ -262,8 +265,8 @@ class Runtime:
         if type(port) is not str or port not in self.factories:
             raise Fault("unknown_port")
         request_copy = deep_copy(request)
-        client = self.factories[port].materialize()
         try:
+            client = self.factories[port].materialize()
             value = client(deep_copy(request_copy))
             require_sync_result(value)
             response = deep_copy(value)
@@ -282,7 +285,8 @@ class Runtime:
         recorded_response = response
         if self._redact is not None:
             recorded_request = deep_copy(self._redact(deep_copy(request)))
-            recorded_response = deep_copy(self._redact(deep_copy(response)))
+            if error is None:
+                recorded_response = deep_copy(self._redact(deep_copy(response)))
         row = {
             "format": "seam-tape",
             "version": 1 if error is None else 2,

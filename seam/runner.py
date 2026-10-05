@@ -15,6 +15,7 @@ import tempfile
 
 from seam.artifact import MAX_ARTIFACT, refused, write_artifact
 from seam.canon import digest, loads
+from seam.case import MAX_CASE, normalize
 from seam.errors import Refuse
 from seam.version import __version__
 
@@ -61,7 +62,33 @@ def _product_digest(module, pythonpath):
     return digest(files)
 
 
-def _validate(art, returncode):
+def _case_digest(path, namespace):
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read(MAX_CASE + 1)
+        if len(data) > MAX_CASE:
+            return None
+        raw = loads(data)
+        if (
+            type(raw) is not dict
+            or type(raw.get("ports")) is not dict
+            or type(raw.get("arrivals")) is not list
+        ):
+            return None
+        handlers = []
+        for arrival in raw["arrivals"]:
+            if type(arrival) is not dict or type(arrival.get("handler")) is not str:
+                return None
+            handlers.append(arrival["handler"])
+        norm = normalize(
+            raw, ports=raw["ports"], handlers=handlers, namespace=namespace, backends=raw["ports"]
+        )
+        return digest(norm)
+    except (Refuse, OSError, ValueError, TypeError, RecursionError):
+        return None
+
+
+def _validate(art, returncode, namespace, case_digest):
     if (
         type(art) is not dict
         or art.get("format") != "seam-artifact"
@@ -80,6 +107,12 @@ def _validate(art, returncode):
         )
     if returncode not in (0, 1, 2) or art.get("status") != (
         "passed" if returncode == 0 else "failed"
+    ):
+        return False
+    if (
+        case_digest is None
+        or art.get("namespace") != namespace
+        or art.get("case_digest") != case_digest
     ):
         return False
     if not all(key in art for key in DIGEST_KEYS):
@@ -119,6 +152,7 @@ def run_product(module, case, namespace, artifact, *, timeout=DEFAULT_TIMEOUT, e
     if os.name != "posix":
         raise Refuse("unsupported_platform")
     output = os.path.abspath(artifact)
+    case_digest = _case_digest(case, namespace)
     child_env = {key: os.environ[key] for key in ("PATH", "PYTHONPATH") if key in os.environ}
     child_env.update(PYTHONHASHSEED="0", PYTHONDONTWRITEBYTECODE="1", TZ="UTC")
     if env is not None:
@@ -178,7 +212,7 @@ def run_product(module, case, namespace, artifact, *, timeout=DEFAULT_TIMEOUT, e
                 with open(child_artifact, "rb") as handle:
                     data = handle.read(MAX_ARTIFACT + 1)
                 art = loads(data) if len(data) <= MAX_ARTIFACT else None
-                valid = _validate(art, proc.returncode)
+                valid = _validate(art, proc.returncode, namespace, case_digest)
             except (Refuse, OSError, ValueError, RecursionError, TypeError):
                 valid = False
             if valid:

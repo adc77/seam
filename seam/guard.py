@@ -563,8 +563,13 @@ def _check_stat(path, *args, **kwargs):
                 permitted = False
     if not permitted:
         raise Fault("file_read", op="file.stat")
+    if POLICY._in_handler and real not in POLICY.read_paths:
+        raise Fault("file_read", op="file.stat")
+    if kwargs.get("dir_fd") is not None and not os.path.isabs(os.fspath(path)):
+        raise Fault("file_access", op="file.relative_dir_fd")
     POLICY.note_read(real)
-    return _real_stat(path, *args, **kwargs)
+    with _resolving():
+        return _real_stat(path, *args, **kwargs)
 
 
 def _audit(event, args):

@@ -66,12 +66,15 @@ def resolve_tape(case_path, tape):
 
 def load_tape(path, port, cutoff_ns, *, allow_errors=False):
     """Visible lines are those with `at_ns <= cutoff`. Later lines are not stored."""
-    size = os.path.getsize(path)
-    if size > MAX_TAPE:
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read(MAX_TAPE + 1)
+    except OSError:
+        raise Refuse("bad_case") from None
+    if len(data) > MAX_TAPE:
         raise Refuse("bad_case")
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            text = handle.read()
+        text = data.decode("utf-8")
     except UnicodeError:
         raise Refuse("tape_torn") from None
     visible = []
@@ -84,13 +87,18 @@ def load_tape(path, port, cutoff_ns, *, allow_errors=False):
             obj = json.loads(raw)
         except json.JSONDecodeError:
             raise Refuse("tape_torn") from None
+        except (ValueError, RecursionError):
+            raise Refuse("bad_case") from None
         except Refuse:
             raise
         if type(obj) is not dict or "at_ns" not in obj or type(obj["at_ns"]) is not int:
             raise Refuse("bad_case")
         if obj["at_ns"] > cutoff_ns:
             continue
-        obj = loads(raw)
+        try:
+            obj = loads(raw)
+        except RecursionError:
+            raise Refuse("bad_case") from None
         expected = _TAPE_KEYS if "response" in obj else (_TAPE_KEYS - {"response"}) | {"error"}
         if set(obj) != expected:
             raise Refuse("bad_case")
@@ -104,14 +112,14 @@ def load_tape(path, port, cutoff_ns, *, allow_errors=False):
             raise Refuse("bad_case")
 
         try:
-            walk(obj["request"], on_bad)
-            if "response" in obj:
-                walk(obj["response"], on_bad)
-            elif (not allow_errors or obj["version"] != 2 or type(obj["error"]) is not str
-                  or not ERROR_CODE.fullmatch(obj["error"])):
-                raise Refuse("bad_case")
-        except Refuse:
-            raise
+            walk(obj, on_bad)
+        except RecursionError:
+            raise Refuse("bad_case") from None
+        if type(obj["port"]) is not str or not ERROR_CODE.fullmatch(obj["port"]):
+            raise Refuse("bad_case")
+        if "error" in obj and (not allow_errors or obj["version"] != 2 or type(obj["error"]) is not str
+                               or not ERROR_CODE.fullmatch(obj["error"])):
+            raise Refuse("bad_case")
         if obj["port"] != port:
             continue
         if last_at is not None and at < last_at:
