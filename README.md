@@ -1,8 +1,8 @@
 # seam
 
-Working title. A Python library that ships inside a product and stays quiet there, and that runs the same product in a separate seeded process against a scripted or recorded outside world.
+Working title. A generalized simulation SDK: run a product's own handlers in a separate seeded process against scripts, cut-off recordings, or isolated stateful backends initialized from production exports. Glass is one consumer, not the SDK's domain.
 
-The spec is [PLAN.md](PLAN.md). Apache-2.0.
+The original v1 spec is [PLAN.md](PLAN.md); the implemented v2 extension and its limits are in [SIMULATION.md](SIMULATION.md). Apache-2.0.
 
 ```shell
 python3 -m unittest discover -s tests -t .
@@ -32,13 +32,13 @@ A handler that does any of those faults the run instead:
 | leak | fault |
 |---|---|
 | `socket`, `subprocess`, `os.system`, `ctypes` | `real_io` |
-| `time.time`, `perf_counter`, `process_time`, `datetime.now` | `real_clock` |
+| `time.time`, `time.sleep`, `perf_counter`, `process_time`, `datetime.now` | `real_clock` |
 | `random`, `secrets`, `uuid`, `os.urandom` | `unseeded_random` |
 | `threading.Thread.start` | `thread` |
 | reading a path that is not allowlisted, `os.stat`, `os.listdir`, `os.scandir` | `file_read` |
 | writing a path that is not allowlisted, `os.mkdir`, `os.rename`, `os.remove` | `file_write` |
 
-Reads and writes are refused unless the path is allowlisted. The runner allowlists the artifact, and the interpreter's own directories are allowlisted for reads so a lazy `import` inside a handler still works. A handler that reads an allowlisted path has that read recorded in the artifact under `fs_reads`, outside the digest: it is provenance for a human, not an input to the run. Seam's own file I/O runs inside `seam.guard.trusted()`.
+Reads and writes are refused unless the path is allowlisted. Imports may read code files in import directories, not arbitrary data files beside them. Bytecode writing is disabled; a `__pycache__` directory grants no access. Explicitly allowlisted reads are recorded under `fs_reads`, outside the digest. These paths are provenance, not pinned data: use a hashed dataset for simulation inputs. Seam's own file I/O runs inside `seam.guard.trusted()`.
 
 The policy **seals** when the guards install. `allow_read`, `allow_write` and `trusted()` are for a product to call while it is wiring up its runtime; from inside a handler they raise `file_access`, because a handler that could widen its own policy would defeat the point of having one.
 
@@ -72,16 +72,17 @@ rt.on("message", on_message)
 rt.start_live()                              # or seam.main(rt) under SEAM_SIM=1
 ```
 
-Launch a simulation through `sim_env`, which pins `PYTHONHASHSEED`:
+Prefer the supervised launcher, which pins hashing, isolates the environment, enforces a deadline, and validates the artifact:
 
 ```python
-import subprocess, sys
-from seam import sim_env
+from seam import run_product
 
-env = sim_env("case.json", "sim-shop", "out.json")
-subprocess.run([sys.executable, "-m", "myproduct"], env=env)
+result = run_product("myproduct", "case.json", "sim-shop", "out.json", timeout=30)
+print(result.returncode, result.artifact["status"])
 ```
 
 This matters: string hashing is salted per interpreter, so iterating a `set` in a handler gives a different order in every process. That changed the run digest on every replay while the run still reported `passed`. The salt is chosen at start-up and cannot be fixed from inside the process, which is why it belongs to the launcher.
 
-The checkout proof in `seam/proof/checkout/` is a complete worked example. Its three cases and the artifact digests are pinned in the suite, so it doubles as a regression test of the format itself.
+`sim_env` remains a lower-level launcher helper, but inherits the parent environment and does not supervise a process. A caught simulation `Fault` still fails the run. Expected dependency failures use `PortError`, which scripts and tapes can replay without poisoning a recovered run. Async and generator handlers are rejected, not silently discarded.
+
+The checkout proof in `seam/proof/checkout/` preserves the v1 golden digests. The inventory proof in `seam/proof/inventory/` initializes an isolated in-memory SQLite database from a pinned export: two reservations see each other's writes, and each run starts fresh. See [the adoption guide](SIMULATION.md) for the backend API.

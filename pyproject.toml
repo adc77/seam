@@ -21,4 +21,4 @@ version = {attr = "seam.version.__version__"}
 include = ["seam*"]
 
 [tool.setuptools.package-data]
-seam = ["proof/checkout/cases/*.json"]
+seam = ["proof/checkout/cases/*.json", "proof/inventory/cases/*.json"]

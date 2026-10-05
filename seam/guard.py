@@ -29,6 +29,7 @@ import os
 import random
 import secrets
 import socket
+import stat
 import sys
 import sysconfig
 import tempfile
@@ -292,10 +293,13 @@ class Policy:
                 return True
         return False
 
+    def is_code(self, real):
+        return self.is_interpreter(real) and real.endswith((".py", ".pyc", ".so", ".pyd"))
+
     def note_read(self, real):
         # Importing a module is not host-state dependence, so those reads are
         # permitted and not recorded as provenance.
-        if not self.is_interpreter(real):
+        if not self.is_interpreter(real) or real in self.extra_reads:
             self.reads.add(real)
 
     def seen_reads(self):
@@ -501,12 +505,7 @@ def _check_open(path, mode, flags):
     if real in _DEVICE_RANDOM:
         raise Fault("unseeded_random", op="os.urandom")
     if real is None:
-        # Not a path: either an integer descriptor, or something `_norm` cannot
-        # resolve. Neither can be allowlisted, and the import machinery writes
-        # its `.pyc` through a descriptor, so an fd is permitted. A non-str,
-        # non-PathLike object is refused, because nothing legitimate passes one.
-        if isinstance(path, int):
-            return
+        # File descriptors and unresolved paths cannot be allowlisted.
         raise Fault("file_access", op="file.unreadable_path")
     if mode is None:
         # os.open passes mode None and the integer flags instead of a mode
@@ -525,7 +524,7 @@ def _check_open(path, mode, flags):
         if real not in POLICY.write_paths:
             raise Fault("file_write", op="file.write")
         return
-    if real not in POLICY.read_paths and not POLICY.is_interpreter(real):
+    if real not in POLICY.read_paths and not POLICY.is_code(real):
         raise Fault("file_read", op="file.read")
     POLICY.note_read(real)
 
@@ -555,57 +554,17 @@ def _check_stat(path, *args, **kwargs):
     if POLICY._resolving:
         return _real_stat(path, *args, **kwargs)
     real = _norm(path)
-    if real is None or (real not in POLICY.read_paths and not POLICY.is_interpreter(real)):
+    permitted = real is not None and (real in POLICY.read_paths or POLICY.is_code(real))
+    if not permitted and real is not None and POLICY.is_interpreter(real):
+        with _resolving():
+            try:
+                permitted = stat.S_ISDIR(_real_stat(real).st_mode)
+            except OSError:
+                permitted = False
+    if not permitted:
         raise Fault("file_read", op="file.stat")
     POLICY.note_read(real)
     return _real_stat(path, *args, **kwargs)
-
-
-def _is_bytecode_path(path):
-    """True when `path` is the `__pycache__` directory itself, or inside it.
-
-    A handler importing its own project's modules makes the interpreter write
-    `.pyc` files. That is the import machinery, not the product reaching for the
-    host, and refusing it would make ordinary product code unusable.
-
-    The path is normalised before the test rather than split on separators. An
-    earlier version looked for `__pycache__` among the literal components, which
-    meant any path of the form `<dir>/__pycache__/../<target>` qualified: the
-    handler got arbitrary read, write and delete while the run still reported
-    `passed`. Normalising collapses the `..` first, so the exemption is decided
-    by where the path actually lands.
-    """
-    if not isinstance(path, (str, bytes, os.PathLike)):
-        return False
-    try:
-        if isinstance(path, bytes):
-            path = path.decode("utf-8", "replace")
-        elif isinstance(path, os.PathLike):
-            path = os.fspath(path)
-    except (TypeError, ValueError):
-        return False
-    if not isinstance(path, str):
-        return False
-    real = _norm(path)
-    if real is None:
-        return False
-    # The path may be the directory itself (mkdir) or a file inside it (the
-    # `.pyc` write), so check the basename and then the parent. Testing both
-    # rather than only the parent is what lets a not-yet-created directory
-    # qualify: `realpath` on a path that does not exist still resolves it, but
-    # there is no parent directory to stat for a path like `/app/__pycache__`.
-    name = os.path.basename(real.rstrip(os.sep) or os.sep)
-    if name == "__pycache__":
-        return True
-    parent = os.path.dirname(real)
-    return os.path.basename(parent) == "__pycache__"
-
-
-def _is_bytecode(event, args):
-    """True for the `__pycache__` writes CPython does when importing."""
-    if event not in ("os.mkdir", "os.rename", "os.remove", "os.truncate", "os.chmod"):
-        return False
-    return any(_is_bytecode_path(arg) for arg in args)
 
 
 def _audit(event, args):
@@ -634,7 +593,7 @@ def _audit(event, args):
     # which a handler cleared the same way.
     trusted = POLICY.trusted in _LIVE_TOKENS
     if event in _WRITE_EVENTS:
-        if not trusted and not _is_bytecode(event, args):
+        if not trusted:
             raise Fault("file_write", op=_WRITE_EVENTS[event])
         return
     if event in _READ_EVENTS:
@@ -653,9 +612,6 @@ def _audit(event, args):
                 return
         raise Fault("file_read", op=_READ_EVENTS[event])
     if event == "open" and args and not trusted:
-        # A `.pyc` write is the import machinery finishing its job.
-        if _is_bytecode_path(args[0]):
-            return
         _check_open(args[0], args[1], args[2] if len(args) > 2 else None)
 
 
@@ -719,6 +675,8 @@ def install_guards(*, write_paths=(), read_paths=()):
         return
     _INSTALLED = True
     POLICY.reset(write_paths, read_paths)
+    sys.dont_write_bytecode = True
+    time.sleep = _clock("time.sleep")
 
     for name in _CLOCK_NAMES:
         if hasattr(time, name):

@@ -79,6 +79,16 @@ jobs:
               raise SystemExit(f"seam resolved to the working tree: {resolved}")
           print("seam resolved to:", resolved)
           PY
+          python - <<'PY'
+          import pathlib
+          import seam
+          from seam import run_product
+          case = pathlib.Path(seam.__file__).parent / "proof/inventory/cases/reserve.json"
+          result = run_product("seam.proof.inventory", str(case), "sim-inventory-reserve", "inventory.json")
+          assert result.returncode == 0, (result.returncode, result.stderr, result.artifact)
+          assert result.artifact["backend_states"] == {"stock": {"book": 1, "pen": 1}}
+          print("installed inventory proof ok")
+          PY
 
   guard:
     name: guard closes on ${{ matrix.os }}

@@ -5,7 +5,7 @@ from copy import deepcopy
 
 from seam.artifact import assemble, digest_body
 from seam.canon import digest, equal, matches
-from seam.errors import Fault
+from seam.errors import Fault, fault_scope
 from seam.guard import trusted
 
 
@@ -126,6 +126,9 @@ def _load_grader(spec):
     fn = getattr(module, func_name)
     if not callable(fn):
         raise Fault("grader_error")
+    from seam.runtime import require_sync
+
+    require_sync(fn)
     return fn
 
 
@@ -151,9 +154,17 @@ def finish(result, case):
     result.assertions = check_all(assemble(result), case.assertions)
     result.status = "failed" if _failed(result) else "passed"
     if case.grader:
+        def post_fault(err):
+            if result.loop_fault is None and result.post_fault is None:
+                result.post_fault = err
+
         try:
             fn = _load_grader(case.grader)
-            out = fn(deepcopy(assemble(result)))
+            with fault_scope(post_fault):
+                out = fn(deepcopy(assemble(result)))
+                from seam.runtime import require_sync_result
+
+                require_sync_result(out)
             if type(out) is not list or any(type(item) is not str for item in out):
                 raise Fault("grader_error", exc_type="ValueError")
             result.grader_failures = out
@@ -161,6 +172,9 @@ def finish(result, case):
             if result.loop_fault is None and result.post_fault is None:
                 result.post_fault = err
         except Exception as err:
+            if result.loop_fault is None and result.post_fault is None:
+                result.post_fault = Fault("grader_error", exc_type=type(err).__name__)
+        except BaseException as err:
             if result.loop_fault is None and result.post_fault is None:
                 result.post_fault = Fault("grader_error", exc_type=type(err).__name__)
     result.status = "failed" if _failed(result) else "passed"

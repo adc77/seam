@@ -6,7 +6,7 @@ This document is the spec. The package in this repository is the implementation.
 
 Working title: **seam**. The name is not decided. It is used so the contracts have a concrete word. `GRAFT` is already taken by unrelated projects and is not available. Renaming before any release is a search-and-replace of the module, the `SEAM_` environment prefix, and the `seam-case` / `seam-artifact` / `seam-tape` format strings.
 
-The file format is version `1`. A later version must bump that number. A runner refuses a version it does not know. It does not guess.
+This document specifies the original version `1`. The implementation also supports version `2`; [SIMULATION.md](SIMULATION.md) specifies its export-backed ports, config, dependency errors, provenance, and supervision. Where that document explicitly changes a runtime rule, it supersedes this historical plan. Unchanged v1 golden digests remain pinned.
 
 ---
 

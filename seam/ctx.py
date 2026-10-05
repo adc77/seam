@@ -119,6 +119,10 @@ class Ctx:
     def handler(self):
         return self._handler
 
+    @property
+    def config(self):
+        return deep_copy(self._host.config)
+
 
 def assert_int(value, *, minimum=None, maximum=INT64_MAX):
     if type(value) is not int:
