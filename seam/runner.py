@@ -14,7 +14,7 @@ import sys
 import tempfile
 
 from seam.artifact import MAX_ARTIFACT, refused, write_artifact
-from seam.canon import digest, loads
+from seam.canon import digest, equal, loads
 from seam.case import MAX_CASE, normalize
 from seam.errors import Refuse
 from seam.version import __version__
@@ -81,19 +81,54 @@ def _case_digest(path, namespace):
                 return None
             handlers.append(arrival["handler"])
         norm = normalize(
-            raw, ports=raw["ports"], handlers=handlers, namespace=namespace, backends=raw["ports"]
+            raw, ports=raw["ports"], handlers=handlers, namespace=namespace, backends=raw["ports"],
+            worlds={name: (None, tuple(port for port, spec in raw["ports"].items()
+                                      if type(spec) is dict and spec.get("world") == name))
+                    for name in raw.get("worlds", {})},
         )
         return digest(norm)
     except (Refuse, OSError, ValueError, TypeError, RecursionError):
         return None
 
 
-def _validate(art, returncode, namespace, case_digest):
+def _checkpoint_matches_artifact(art):
+    from seam.checkpoint import validate_document
+
+    payload = validate_document(art["checkpoint"])["payload"]
+    if type(art["clock"]) is not dict or not equal(payload["at_ns"], art["clock"].get("end_ns")):
+        return False
+    if not equal(payload["state"], art["final_state"]):
+        return False
+    for key in ("events", "port_calls", "state_snapshots"):
+        if type(payload[key]) is not list or not equal(payload[key], art[key]):
+            return False
+    if type(payload["timers"]) is not list:
+        return False
+    for timer in payload["timers"]:
+        keys = {"token", "handler", "fire_at_ns", "outcome", "seq"}
+        if type(timer) is not dict or set(timer) != keys | ({"name"} if "name" in timer else set()):
+            return False
+    timers = [{key: value for key, value in row.items() if key != "seq"} for row in payload["timers"]]
+    if not equal(timers, art["timers"]):
+        return False
+    worlds = payload["worlds"]
+    states = art.get("world_states", {})
+    if type(worlds) is not dict or type(states) is not dict or set(worlds) != set(states):
+        return False
+    for name, frame in worlds.items():
+        if type(frame) is not dict or type(frame.get("initialized")) is not bool:
+            return False
+        if frame["initialized"] and ("snapshot" not in frame or not equal(frame["snapshot"], states[name])):
+            return False
+    return True
+
+
+def _validate(art, returncode, namespace, case_digest, identity=None):
     if (
         type(art) is not dict
         or art.get("format") != "seam-artifact"
         or type(art.get("version")) is not int
-        or art["version"] not in (1, 2)
+        or art["version"] not in (1, 2, 3)
     ):
         return False
     if type(art.get("provenance", {})) is not dict:
@@ -105,9 +140,8 @@ def _validate(art, returncode, namespace, case_digest):
             and type(art.get("fault")) is dict
             and type(art["fault"].get("code")) is str
         )
-    if returncode not in (0, 1, 2) or art.get("status") != (
-        "passed" if returncode == 0 else "failed"
-    ):
+    status = "passed" if returncode == 0 else ("paused" if returncode == 4 else "failed")
+    if returncode not in (0, 1, 2, 4) or art.get("status") != status:
         return False
     if (
         case_digest is None
@@ -117,15 +151,27 @@ def _validate(art, returncode, namespace, case_digest):
         return False
     if not all(key in art for key in DIGEST_KEYS):
         return False
-    if returncode == 0:
+    if returncode in (0, 4):
         if "fault" in art or art.get("grader"):
             return False
         if any(
             type(row) is not dict or row.get("ok") is not True for row in art.get("assertions", [])
         ):
             return False
+    if returncode == 4:
+        if art["version"] != 3 or art.get("stop_reason") != "checkpoint":
+            return False
+    if "checkpoint" in art:
+        if art["version"] != 3 or returncode == 0 or art.get("stop_reason") != "checkpoint":
+            return False
+        if not _checkpoint_matches_artifact(art):
+            return False
+        if identity is not None and art["checkpoint"]["identity"] != identity:
+            return False
+    elif art.get("stop_reason") == "checkpoint":
+        return False
     body = {key: art[key] for key in DIGEST_KEYS}
-    for key in ("terminal", "backend_states"):
+    for key in ("terminal", "backend_states", "world_states"):
         if key in art:
             body[key] = art[key]
     if returncode == 2:
@@ -180,6 +226,8 @@ def run_product(module, case, namespace, artifact, *, timeout=DEFAULT_TIMEOUT, e
             SEAM_CASE=os.path.abspath(case),
             SEAM_NAMESPACE=namespace,
             SEAM_ARTIFACT=child_artifact,
+            SEAM_PRODUCT_SHA256=provenance["product"]["sha256"],
+            SEAM_ENVIRONMENT_SHA256=provenance["environment_sha256"],
         )
         with tempfile.TemporaryFile() as stderr_file:
             proc = subprocess.Popen(
@@ -212,7 +260,13 @@ def run_product(module, case, namespace, artifact, *, timeout=DEFAULT_TIMEOUT, e
                 with open(child_artifact, "rb") as handle:
                     data = handle.read(MAX_ARTIFACT + 1)
                 art = loads(data) if len(data) <= MAX_ARTIFACT else None
-                valid = _validate(art, proc.returncode, namespace, case_digest)
+                identity = None
+                if type(art) is dict and "checkpoint" in art:
+                    identity = {"product_sha256": provenance["product"]["sha256"],
+                                "sdk_sha256": _product_digest("seam", child_env.get("PYTHONPATH", "")),
+                                "environment_sha256": provenance["environment_sha256"],
+                                "python": provenance["python"]}
+                valid = _validate(art, proc.returncode, namespace, case_digest, identity)
             except (Refuse, OSError, ValueError, RecursionError, TypeError):
                 valid = False
             if valid:

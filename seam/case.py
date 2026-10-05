@@ -8,6 +8,7 @@ from seam.errors import PortError, Refuse
 from seam.backend import BackendPort
 from seam.dataset import load_datasets
 from seam.ports import RecordingPort, ScriptPort, load_tape, resolve_tape, validate_match
+from seam.world import WorldManager, WorldPort
 
 MAX_CASE = 4 * 1024 * 1024
 
@@ -47,6 +48,7 @@ STOP_REASONS = {
     "quiescence",
     "deadline",
     "terminal",
+    "checkpoint",
 }
 #: Fault codes. These are raised as `Fault(...)` somewhere in the package, and a
 #: `fault_is` or `stopped` assertion may name one. Kept separate from
@@ -125,6 +127,12 @@ class Case:
     meta: dict = field(default_factory=dict)
     config: object = field(default_factory=dict)
     provenance: dict = field(default_factory=dict)
+    worlds: dict = field(default_factory=dict)
+    handlers: set = field(default_factory=set)
+    checkpoint_after: int | None = None
+    resume: dict | None = None
+    workload_digest: str | None = None
+    identity: dict | None = None
 
 
 def _match(node):
@@ -134,7 +142,7 @@ def _match(node):
     validate_match(node, on_bad)
 
 
-def _assertion(item):
+def _assertion(item, version):
     if type(item) is not dict or "op" not in item or type(item["op"]) is not str:
         _bad()
     op = item["op"]
@@ -161,7 +169,8 @@ def _assertion(item):
         if type(item["handler"]) is not str or not IDENT.match(item["handler"]) or type(item["times"]) is not int or item["times"] < 0:
             _bad()
     elif op == "timer_outcome":
-        if "outcome" not in item or item["outcome"] not in ("fired", "cancelled", "dropped"):
+        outcomes = ("fired", "cancelled", "dropped", "armed") if version == 3 else ("fired", "cancelled", "dropped")
+        if "outcome" not in item or item["outcome"] not in outcomes:
             _bad()
         named = "name" in item
         tokened = "token" in item
@@ -183,6 +192,8 @@ def _assertion(item):
         # reports either through `stop_reason`.
         if type(item["reason"]) is not str or item["reason"] not in (STOP_REASONS | FAULT_CODES):
             _bad()
+        if item["reason"] == "checkpoint" and version != 3:
+            _bad()
         if "terminal" in item and (type(item["terminal"]) is not str or not TERMINAL.match(item["terminal"])):
             _bad()
     elif op == "digest_is":
@@ -195,7 +206,7 @@ def _assertion(item):
         _bad()
 
 
-def normalize(raw, *, ports, handlers, namespace, backends=()):
+def normalize(raw, *, ports, handlers, namespace, backends=(), worlds=None):
     if type(raw) is not dict:
         _bad()
     # Seed is allowed to be unsigned 64-bit, so it is checked before the int64 walk.
@@ -204,9 +215,11 @@ def normalize(raw, *, ports, handlers, namespace, backends=()):
     body = {key: value for key, value in raw.items() if key != "seed"}
     walk(body, _bad)
     version = raw.get("version")
-    if type(version) is not int or version not in (1, 2):
+    if type(version) is not int or version not in (1, 2, 3):
         _bad()
     keys = CASE_KEYS if version == 1 else CASE_KEYS | {"datasets", "config"}
+    if version == 3:
+        keys |= {"worlds", "checkpoint_after", "resume"}
     _obj(raw, keys, {"format", "version", "name", "seed", "namespace", "clock", "initial_state", "arrivals", "ports", "stop"})
     if raw["format"] != "seam-case":
         _bad()
@@ -234,6 +247,16 @@ def normalize(raw, *, ports, handlers, namespace, backends=()):
         arrivals.append({"at_ns": item["at_ns"], "handler": item["handler"], "body": item["body"]})
     if type(raw["ports"]) is not dict:
         _bad()
+    registrations = {} if worlds is None else worlds
+    world_specs = raw.get("worlds", {})
+    if type(world_specs) is not dict:
+        _bad()
+    for name, spec in world_specs.items():
+        if type(name) is not str or not IDENT.fullmatch(name) or name not in registrations:
+            raise Refuse("bad_backend")
+        _obj(spec, {"dataset"}, {"dataset"})
+        if type(spec["dataset"]) is not str or not IDENT.fullmatch(spec["dataset"]):
+            raise Refuse("bad_dataset")
     have = set(ports)
     want = set(raw["ports"])
     if want - have:
@@ -247,8 +270,17 @@ def normalize(raw, *, ports, handlers, namespace, backends=()):
         mode = spec["mode"]
         if mode == "generator":
             raise Refuse("unsupported")
-        if mode == "backend":
-            if version != 2 or name not in backends:
+        if mode == "world":
+            if version != 3:
+                raise Refuse("unsupported")
+            _obj(spec, {"mode", "world"}, {"mode", "world"})
+            world = spec["world"]
+            if (type(world) is not str or world not in world_specs
+                    or name not in registrations[world][1]):
+                raise Refuse("bad_backend")
+            norm_ports[name] = {"mode": "world", "world": world}
+        elif mode == "backend":
+            if version not in (2, 3) or name not in backends:
                 raise Refuse("bad_backend")
             _obj(spec, {"mode", "dataset"}, {"mode", "dataset"})
             dataset = spec["dataset"]
@@ -323,7 +355,7 @@ def normalize(raw, *, ports, handlers, namespace, backends=()):
     if type(assertions) is not list or len(assertions) > MAX_ASSERTIONS:
         _bad()
     for item in assertions:
-        _assertion(item)
+        _assertion(item, version)
     log_state = raw.get("log_state", "on_change")
     if type(log_state) is not str or log_state not in ("on_change", "every_event", "end_only"):
         _bad()
@@ -355,14 +387,37 @@ def normalize(raw, *, ports, handlers, namespace, backends=()):
         norm["stop"]["terminal"] = terminal
     if grader is not None:
         norm["grader"] = grader
-    if version == 2:
+    if version >= 2:
         norm["datasets"] = raw.get("datasets", {})
         norm["config"] = raw.get("config", {})
+    if version == 3:
+        referenced = {spec["world"] for spec in norm_ports.values() if spec["mode"] == "world"}
+        if referenced != set(world_specs):
+            raise Refuse("bad_backend")
+        norm["worlds"] = world_specs
+        if "checkpoint_after" in raw:
+            count = raw["checkpoint_after"]
+            if type(count) is not int or count < 1:
+                raise Refuse("bad_checkpoint")
+            norm["checkpoint_after"] = count
+        if "resume" in raw:
+            _obj(raw["resume"], {"path", "sha256"}, {"path", "sha256"})
+            norm["resume"] = raw["resume"]
+        if ("checkpoint_after" in raw or "resume" in raw) and any(
+            spec["mode"] == "backend" for spec in norm_ports.values()
+        ):
+            raise Refuse("unsupported_checkpoint")
     return norm
 
 
-def _compile(path, norm, backends, datasets):
+def _compile(path, norm, backends, datasets, worlds):
     compiled = {}
+    managers = {}
+    for name, spec in norm.get("worlds", {}).items():
+        if spec["dataset"] not in datasets:
+            raise Refuse("bad_dataset")
+        factory, ports = worlds[name]
+        managers[name] = WorldManager(factory, ports, datasets[spec["dataset"]], norm["config"])
     for name, spec in norm["ports"].items():
         if spec["mode"] == "script":
             replies = [
@@ -375,14 +430,16 @@ def _compile(path, norm, backends, datasets):
             if dataset not in datasets:
                 raise Refuse("bad_dataset")
             compiled[name] = BackendPort(backends[name], datasets[dataset], norm["config"])
+        elif spec["mode"] == "world":
+            compiled[name] = WorldPort(name, managers[spec["world"]])
         else:
             full = resolve_tape(path, spec["tape"])
-            visible = load_tape(full, name, spec["cutoff_ns"], allow_errors=norm["version"] == 2)
+            visible = load_tape(full, name, spec["cutoff_ns"], allow_errors=norm["version"] >= 2)
             compiled[name] = RecordingPort(visible)
-    return compiled
+    return compiled, managers
 
 
-def load_case(path, *, ports, handlers, namespace, backends=None):
+def load_case(path, *, ports, handlers, namespace, backends=None, worlds=None):
     if type(namespace) is not str or not SIM_NS.match(namespace):
         raise Refuse("namespace")
     try:
@@ -398,15 +455,18 @@ def load_case(path, *, ports, handlers, namespace, backends=None):
         raise Refuse("bad_case") from None
     if backends is None:
         backends = {}
+    if worlds is None:
+        worlds = {}
     try:
-        norm = normalize(raw, ports=set(ports), handlers=set(handlers), namespace=namespace, backends=set(backends))
+        norm = normalize(raw, ports=set(ports), handlers=set(handlers), namespace=namespace,
+                         backends=set(backends), worlds=worlds)
     except RecursionError:
         raise Refuse("bad_case") from None
     case_digest = digest(norm)
     compiled = {}
     try:
         datasets = load_datasets(path, norm.get("datasets", {}), norm["clock"]["start_ns"])
-        compiled = _compile(path, norm, backends, datasets)
+        compiled, managers = _compile(path, norm, backends, datasets, worlds)
     except Refuse as err:
         err.meta.update(
             name=norm["name"],
@@ -418,7 +478,7 @@ def load_case(path, *, ports, handlers, namespace, backends=None):
         raise
     stop_n = norm["stop"]
     provenance = {}
-    if norm["version"] == 2:
+    if norm["version"] >= 2:
         provenance["datasets"] = norm["datasets"]
     tapes = {}
     for name, port in compiled.items():
@@ -428,7 +488,7 @@ def load_case(path, *, ports, handlers, namespace, backends=None):
             tapes[name] = digest(visible)
     if tapes:
         provenance["tapes"] = tapes
-    return Case(
+    case = Case(
         name=norm["name"],
         seed=norm["seed"],
         namespace=norm["namespace"],
@@ -452,4 +512,23 @@ def load_case(path, *, ports, handlers, namespace, backends=None):
         config=norm.get("config", {}),
         provenance=provenance,
         meta={"name": norm["name"], "namespace": norm["namespace"], "seed": norm["seed"], "case_digest": case_digest},
+        worlds=managers,
+        handlers=set(handlers),
+        checkpoint_after=norm.get("checkpoint_after"),
     )
+    if norm["version"] == 3:
+        workload = {key: value for key, value in norm.items()
+                    if key not in ("assertions", "grader", "checkpoint_after", "resume")}
+        case.workload_digest = digest({"case": workload, "tapes": tapes})
+        if "checkpoint_after" in norm or "resume" in norm:
+            from seam.checkpoint import load_checkpoint, product_identity
+
+            try:
+                case.identity = product_identity()
+                if "resume" in norm:
+                    case.resume = load_checkpoint(path, norm["resume"], case, case.identity)
+                    case.provenance["checkpoint"] = norm["resume"]
+            except Refuse as err:
+                err.meta.update(case.meta, start_ns=case.start_ns)
+                raise
+    return case

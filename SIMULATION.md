@@ -104,4 +104,4 @@ Live `deliver` serializes concurrent callers; same-thread reentry is still forbi
 - Monkeypatch guards are best-effort. Prebound references, native extensions, setup-time I/O, and private runtime internals remain trusted. Use isolated containers with no network and least privilege for production-derived data.
 - Artifacts and recordings can contain sensitive data and are mode `0644` for v1 compatibility. Store them in access-controlled directories; do not commit real customer exports.
 
-The next increment should prove adapter fidelity on a real product, then add opt-in isolated database lifecycle support. Glass and the two SDK proofs test this boundary; none of them establish that arbitrary products are plug-and-play.
+Version 3 adds [shared dependency worlds and resumable simulation checkpoints](WORLDS.md), including an explicit cleanup lifecycle. The next increment should prove adapter fidelity and point-in-time inputs on a real product. Glass and the SDK proofs test the boundary; none establish that arbitrary products are plug-and-play.

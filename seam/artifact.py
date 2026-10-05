@@ -33,6 +33,8 @@ def digest_body(result):
         body["fault"] = result.loop_fault.as_dict()
     if result.backend_states:
         body["backend_states"] = result.backend_states
+    if result.world_states:
+        body["world_states"] = result.world_states
     return body
 
 
@@ -71,6 +73,10 @@ def assemble(result):
         art["backend_states"] = result.backend_states
     if result.provenance:
         art["provenance"] = result.provenance
+    if result.world_states:
+        art["world_states"] = result.world_states
+    if result.checkpoint is not None:
+        art["checkpoint"] = result.checkpoint
     return art
 
 
