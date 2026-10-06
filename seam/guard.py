@@ -24,6 +24,7 @@ policy violation.
 """
 
 import contextlib
+from importlib.machinery import PathFinder
 import datetime as _datetime
 import os
 import random
@@ -170,6 +171,24 @@ def _under_system_temp(normalized):
     return any(
         normalized == root or normalized.startswith(root + os.sep) for root in roots
     )
+
+
+class _GuardedPathFinder(PathFinder):
+    """Skip temp search paths without changing trusted imports or other finders."""
+
+    @classmethod
+    def _get_spec(cls, fullname, path, target=None):
+        """Filter the shared hook used by initial and namespace-package lookups."""
+        if POLICY.trusted in _LIVE_TOKENS:
+            return super()._get_spec(fullname, path, target)
+        paths = []
+        for value in path:
+            if isinstance(value, str):
+                normalized = _norm(value or os.curdir)
+                if normalized is not None and _under_system_temp(normalized):
+                    continue
+            paths.append(value)
+        return super()._get_spec(fullname, paths, target)
 
 
 class Policy:
@@ -680,6 +699,9 @@ def install_guards(*, write_paths=(), read_paths=()):
         return
     _INSTALLED = True
     POLICY.reset(write_paths, read_paths)
+    sys.meta_path[:] = [
+        _GuardedPathFinder if finder is PathFinder else finder for finder in sys.meta_path
+    ]
     sys.dont_write_bytecode = True
     time.sleep = _clock("time.sleep")
 
