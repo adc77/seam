@@ -713,6 +713,195 @@ class ProcessTest(unittest.TestCase):
             self.assertEqual(art["status"], "passed", dumps(art)[:400])
             self.assertEqual(art["port_calls"][0]["request"], {"found": True})
 
+    def test_lazy_import_skips_temp_paths_after_cache_invalidation(self):
+        """Cold imports skip excluded paths even when FileFinder must refresh."""
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory(
+            dir=os.path.dirname(REPO)
+        ) as code_directory:
+            nested = os.path.join(directory, "nested")
+            os.mkdir(nested)
+            link = os.path.join(code_directory, "temp-link")
+            os.symlink(nested, link)
+            variants = (
+                (tempfile.gettempdir(), REPO),
+                (nested, REPO),
+                ("", directory),
+                (".", directory),
+                ("nested", directory),
+                (link, REPO),
+            )
+            case_path = os.path.join(directory, "case.json")
+            write_json(case_path, _one_handler_case("sim-cold-import", "go"))
+            for index, (path, cwd) in enumerate(variants):
+                with self.subTest(path=path):
+                    out = os.path.join(directory, f"out-{index}.json")
+                    script = (
+                        "import os, sys\n"
+                        "from importlib import invalidate_caches\n"
+                        f"os.chdir({cwd!r})\n"
+                        f"sys.path.insert(0, {path!r})\n"
+                        f"sys.path.append({path!r})\n"
+                        "paths = sys.path\n"
+                        "before = list(sys.path)\n"
+                        "from seam import Runtime, main\n"
+                        "rt = Runtime(namespace='cold-import')\n"
+                        "def go(ctx, body):\n"
+                        "    invalidate_caches()\n"
+                        "    import xml.sax\n"
+                        "    import importlib.util\n"
+                        "    ctx.patch('found', importlib.util.find_spec('xml.sax') is not None)\n"
+                        "    ctx.patch('unchanged', sys.path == before)\n"
+                        "    ctx.patch('same_list', paths is sys.path)\n"
+                        "rt.on('go', go)\n"
+                        "print('CODE', main(rt))\n"
+                    )
+                    proc = run_product_case(case_path, "sim-cold-import", out, script)
+                    with open(out, encoding="ascii") as handle:
+                        art = loads(handle.read())
+                    self.assertIn("CODE 0", proc.stdout, dumps(art))
+                    self.assertEqual(art["status"], "passed", dumps(art))
+                    self.assertEqual(
+                        art["final_state"],
+                        {"found": True, "unchanged": True, "same_list": True},
+                    )
+                    self.assertIsNone(art.get("fs_reads"))
+
+    def test_namespace_import_refresh_keeps_dynamic_code_paths(self):
+        """Namespace package refreshes use the same guarded path search."""
+        with tempfile.TemporaryDirectory(dir=os.path.dirname(REPO)) as directory:
+            for name, module, value in (("first", "one", 1), ("second", "two", 2)):
+                package = os.path.join(directory, name, "seam_namespace_canary")
+                os.makedirs(package)
+                with open(os.path.join(package, module + ".py"), "w", encoding="ascii") as handle:
+                    handle.write(f"VALUE = {value}\n")
+            first, second = (os.path.join(directory, name) for name in ("first", "second"))
+            case_path = os.path.join(directory, "case.json")
+            out = os.path.join(directory, "out.json")
+            write_json(case_path, _one_handler_case("sim-namespace-import", "go"))
+            script = (
+                "import sys, tempfile\n"
+                "from importlib import invalidate_caches\n"
+                f"sys.path[:0] = [tempfile.gettempdir(), {first!r}, {second!r}]\n"
+                "from seam import Runtime, main\n"
+                "rt = Runtime(namespace='namespace-import')\n"
+                "def go(ctx, body):\n"
+                f"    sys.path.remove({second!r})\n"
+                "    invalidate_caches()\n"
+                "    import seam_namespace_canary.one\n"
+                f"    sys.path.append({second!r})\n"
+                "    invalidate_caches()\n"
+                "    import seam_namespace_canary.two\n"
+                "    ctx.set_state({'one': seam_namespace_canary.one.VALUE,\n"
+                "                   'two': seam_namespace_canary.two.VALUE})\n"
+                "rt.on('go', go)\n"
+                "print('CODE', main(rt))\n"
+            )
+            proc = run_product_case(case_path, "sim-namespace-import", out, script)
+            with open(out, encoding="ascii") as handle:
+                art = loads(handle.read())
+            self.assertIn("CODE 0", proc.stdout, dumps(art))
+            self.assertEqual(art["final_state"], {"one": 1, "two": 2})
+            self.assertIsNone(art.get("fs_reads"))
+
+    def test_custom_import_finders_are_preserved(self):
+        """Only the default filesystem finder changes in simulation."""
+        with tempfile.TemporaryDirectory() as directory:
+            case_path = os.path.join(directory, "case.json")
+            out = os.path.join(directory, "out.json")
+            write_json(case_path, _one_handler_case("sim-custom-import", "go"))
+            script = (
+                "import sys\n"
+                "from importlib.machinery import ModuleSpec\n"
+                "class Finder:\n"
+                "    def find_spec(self, fullname, path=None, target=None):\n"
+                "        if fullname == 'seam_virtual_canary':\n"
+                "            return ModuleSpec(fullname, self)\n"
+                "    def create_module(self, spec):\n"
+                "        return None\n"
+                "    def exec_module(self, module):\n"
+                "        module.VALUE = 7\n"
+                "finder = Finder()\n"
+                "sys.meta_path.insert(0, finder)\n"
+                "meta_path = sys.meta_path\n"
+                "from seam import Runtime, main\n"
+                "rt = Runtime(namespace='custom-import')\n"
+                "def go(ctx, body):\n"
+                "    import seam_virtual_canary\n"
+                "    assert sys.meta_path is meta_path and sys.meta_path[0] is finder\n"
+                "    ctx.set_state({'value': seam_virtual_canary.VALUE})\n"
+                "rt.on('go', go)\n"
+                "print('CODE', main(rt))\n"
+            )
+            proc = run_product_case(case_path, "sim-custom-import", out, script)
+            with open(out, encoding="ascii") as handle:
+                art = loads(handle.read())
+            self.assertIn("CODE 0", proc.stdout, dumps(art))
+            self.assertEqual(art["final_state"], {"value": 7})
+
+    def test_temp_import_path_filter_does_not_grant_filesystem_access(self):
+        """Skipping import paths must not allow temp reads, stats, or listings."""
+        with tempfile.TemporaryDirectory() as directory:
+            secret = os.path.join(directory, "seam_temp_canary.py")
+            with open(secret, "w", encoding="ascii") as handle:
+                handle.write("CANARY = 'HOSTSECRET-TEMP-CANARY'\n")
+            case_path = os.path.join(directory, "case.json")
+            write_json(case_path, _one_handler_case("sim-temp-access", "go"))
+            attempts = (
+                f"os.listdir({directory!r})",
+                f"os.scandir({directory!r})",
+                f"os.stat({secret!r})",
+                f"open({secret!r}).read()",
+                f"sys.path.insert(0, {directory!r}); import seam_temp_canary",
+            )
+            for index, attempt in enumerate(attempts):
+                with self.subTest(attempt=attempt):
+                    out = os.path.join(directory, f"out-{index}.json")
+                    script = (
+                        "import os, sys\n"
+                        f"sys.path.insert(0, {directory!r})\n"
+                        "from seam import Runtime, main\n"
+                        "rt = Runtime(namespace='temp-access')\n"
+                        "def go(ctx, body):\n"
+                        f"    {attempt}\n"
+                        "rt.on('go', go)\n"
+                        "print('CODE', main(rt))\n"
+                    )
+                    proc = run_product_case(case_path, "sim-temp-access", out, script)
+                    self.assertIn("CODE 2", proc.stdout, proc.stderr)
+                    with open(out, encoding="ascii") as handle:
+                        art = loads(handle.read())
+                    if "import seam_temp_canary" in attempt:
+                        self.assertEqual(art["fault"]["code"], "handler_error")
+                        self.assertEqual(art["fault"]["exc_type"], "ModuleNotFoundError")
+                    else:
+                        self.assertEqual(art["fault"]["code"], "file_read")
+                    self.assertNotIn("HOSTSECRET-TEMP-CANARY", dumps(art) + proc.stdout + proc.stderr)
+
+    def test_live_lazy_import_keeps_temp_search_paths(self):
+        """Live mode leaves import paths and bytecode policy untouched."""
+        with tempfile.TemporaryDirectory() as directory:
+            with open(os.path.join(directory, "seam_live_canary.py"), "w", encoding="ascii") as handle:
+                handle.write("VALUE = 'live-import-ok'\n")
+            script = (
+                "import sys\n"
+                f"sys.path.insert(0, {directory!r})\n"
+                "before = list(sys.path)\n"
+                "bytecode = sys.dont_write_bytecode\n"
+                "from seam import Runtime\n"
+                "rt = Runtime(namespace='live-import')\n"
+                "def go(ctx, body):\n"
+                "    import seam_live_canary\n"
+                "    print(seam_live_canary.VALUE)\n"
+                "rt.on('go', go)\n"
+                "rt.start_live()\n"
+                "rt.deliver('go', {})\n"
+                "assert sys.path == before\n"
+                "assert sys.dont_write_bytecode == bytecode\n"
+            )
+            proc = run_script(script, child_env())
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout, "live-import-ok\n")
+
     def test_patched_stat_returns_a_real_result_and_full_signature(self):
         """`_check_stat` must behave like `os.stat`.
 
