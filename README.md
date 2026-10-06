@@ -89,3 +89,5 @@ This matters: string hashing is salted per interpreter, so iterating a `set` in 
 The checkout proof in `seam/proof/checkout/` preserves the v1 golden digests. The inventory proof in `seam/proof/inventory/` initializes an isolated in-memory SQLite database from a pinned export: two reservations see each other's writes, and each run starts fresh. See [the adoption guide](SIMULATION.md) for the backend API.
 
 The shared-store proof in `seam/proof/shared_store/` routes separate write/read ports through one SQLite world and resumes pending timers in fresh processes. See [worlds and checkpoints](WORLDS.md) for the lifecycle contract and exact-resume limits.
+
+Seam 0.4 adds a shared, bounded capture envelope and product-owned replay packaging, validated by Glass and an independent reservation service. See [capture and replay](CAPTURE.md) for APIs, explicit equal-time ordering, and what exporters must still supply.

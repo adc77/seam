@@ -219,7 +219,7 @@ def normalize(raw, *, ports, handlers, namespace, backends=(), worlds=None):
         _bad()
     keys = CASE_KEYS if version == 1 else CASE_KEYS | {"datasets", "config"}
     if version == 3:
-        keys |= {"worlds", "checkpoint_after", "resume"}
+        keys |= {"worlds", "checkpoint_after", "resume", "same_time_order"}
     _obj(raw, keys, {"format", "version", "name", "seed", "namespace", "clock", "initial_state", "arrivals", "ports", "stop"})
     if raw["format"] != "seam-case":
         _bad()
@@ -391,6 +391,12 @@ def normalize(raw, *, ports, handlers, namespace, backends=(), worlds=None):
         norm["datasets"] = raw.get("datasets", {})
         norm["config"] = raw.get("config", {})
     if version == 3:
+        if "same_time_order" in raw:
+            if type(raw["same_time_order"]) is not str or raw["same_time_order"] not in (
+                "sequence", "timers_first"
+            ):
+                _bad()
+            norm["same_time_order"] = raw["same_time_order"]
         referenced = {spec["world"] for spec in norm_ports.values() if spec["mode"] == "world"}
         if referenced != set(world_specs):
             raise Refuse("bad_backend")
