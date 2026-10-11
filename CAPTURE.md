@@ -13,7 +13,7 @@ The product captures a consistent snapshot, incoming deliveries, and observed ou
   "format": "seam-capture",
   "version": 1,
   "payload": {
-    "source": {"module":"owned_product.replay","product_sha256":"...","sdk_version":"0.4.0","sdk_sha256":"..."},
+    "source": {"module":"owned_product.replay","product_sha256":"...","sdk_version":"0.4.1","sdk_sha256":"..."},
     "as_of_ns": 100,
     "until_ns": 200,
     "config": {},
