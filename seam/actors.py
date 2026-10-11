@@ -46,6 +46,20 @@ def population(actors, *, seed=0, tape=None):
     return _population(document)
 
 
+def inference_population(actors, *, seed=0, responses=()):
+    """Create an external-decision dataset; unprovided decisions stop at an explicit request barrier."""
+    return _population(
+        {
+            "format": "seam-actors",
+            "version": 1,
+            "seed": seed,
+            "actors": actors,
+            "mode": "inference",
+            "tape": list(responses),
+        }
+    )
+
+
 def _population(value):
     _fields(value, ("format", "version", "seed", "actors", "mode", "tape"))
     if (
@@ -55,7 +69,11 @@ def _population(value):
     ):
         raise Fault("bad_actor")
     assert_int(value["seed"], minimum=0)
-    if type(value["mode"]) is not str or value["mode"] not in ("rules", "replay"):
+    if type(value["mode"]) is not str or value["mode"] not in (
+        "rules",
+        "replay",
+        "inference",
+    ):
         raise Fault("bad_actor")
     actors, tape = value["actors"], value["tape"]
     if type(actors) is not list or not 1 <= len(actors) <= MAX_ACTORS:
@@ -95,7 +113,12 @@ def _population(value):
         if len(set(actions)) != len(actions):
             raise Fault("bad_actor")
     for record in tape:
-        _record(record)
+        if value["mode"] == "inference":
+            _fields(record, ("request", "decision"))
+            _request(record["request"])
+            _decision(record["decision"])
+        else:
+            _record(record)
     return _bounded(value)
 
 
@@ -113,6 +136,20 @@ def _decision(value):
 def _record(value):
     _fields(value, ("request", "decision", "rng_after", "delivery"))
     request = value["request"]
+    _request(request)
+    _decision(value["decision"])
+    assert_int(
+        value["rng_after"],
+        minimum=request["rng_before"],
+        maximum=request["rng_before"] + MAX_DRAWS,
+    )
+    delivery = value["delivery"]
+    if delivery is not None:
+        _fields(delivery, ("handler", "body"))
+        _identifier(delivery["handler"])
+
+
+def _request(request):
     _fields(
         request,
         (
@@ -140,16 +177,6 @@ def _record(value):
         _identifier(action)
     if len(set(request["actions"])) != len(request["actions"]):
         raise Fault("bad_actor")
-    _decision(value["decision"])
-    assert_int(
-        value["rng_after"],
-        minimum=request["rng_before"],
-        maximum=request["rng_before"] + MAX_DRAWS,
-    )
-    delivery = value["delivery"]
-    if delivery is not None:
-        _fields(delivery, ("handler", "body"))
-        _identifier(delivery["handler"])
 
 
 class ActorRandom:
@@ -277,9 +304,9 @@ class ActorSystem:
                     for row in state["actors"].values()
                 ):
                     raise Fault("actor_pending")
-                if spec["mode"] == "replay" and len(state["decisions"]) != len(
-                    spec["tape"]
-                ):
+                if spec["mode"] in ("replay", "inference") and len(
+                    state["decisions"]
+                ) != len(spec["tape"]):
                     raise Fault("actor_tape_unused")
                 state["sealed"] = True
                 return {"sealed": True}
@@ -313,7 +340,18 @@ class ActorSystem:
                 "actions": actor["actions"],
             }
             rng = ActorRandom(spec["seed"], actor["id"], current["rng_counter"])
-            if spec["mode"] == "replay":
+            if spec["mode"] == "inference":
+                index = len(state["decisions"])
+                if index >= len(spec["tape"]):
+                    raise Fault(
+                        "actor_inference_required", op=dumps(_bounded(policy_input))
+                    )
+                recorded = spec["tape"][index]
+                if not equal(policy_input, recorded["request"]):
+                    raise Fault("actor_tape_mismatch")
+                decision = _decision(recorded["decision"])
+                counter = rng.counter
+            elif spec["mode"] == "replay":
                 index = len(state["decisions"])
                 if index >= len(spec["tape"]):
                     raise Fault("actor_tape_exhausted")
@@ -437,6 +475,14 @@ class ActorSystem:
                     index >= len(spec["tape"]) or not equal(record, spec["tape"][index])
                 ):
                     raise Fault("actor_tape_mismatch")
+                if spec["mode"] == "inference" and (
+                    index >= len(spec["tape"])
+                    or not equal(
+                        {"request": request, "decision": decision}, spec["tape"][index]
+                    )
+                    or record["rng_after"] != request["rng_before"]
+                ):
+                    raise Fault("actor_tape_mismatch")
                 delay = decision["wake_after_ns"]
                 at_ns = None if delay is None else request["at_ns"] + delay
                 if at_ns is not None and at_ns > INT64_MAX:
@@ -458,7 +504,7 @@ class ActorSystem:
                     for row in rebuilt.values()
                 )
                 or (
-                    spec["mode"] == "replay"
+                    spec["mode"] in ("replay", "inference")
                     and len(snapshot["decisions"]) != len(spec["tape"])
                 )
             ):

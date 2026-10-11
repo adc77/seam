@@ -113,6 +113,11 @@ jobs:
               print("installed shared-world checkpoint proof ok")
           PY
 
+      - name: Installed inference handoff and offline replay
+        run: |
+          cd "$RUNNER_TEMP"
+          python -m seam.proof.inference --out "$RUNNER_TEMP/inference-proof" --installed
+
   guard:
     name: guard closes on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

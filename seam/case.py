@@ -58,6 +58,7 @@ FAULT_CODES = {
     "actor_action_forbidden",
     "actor_budget",
     "actor_live_forbidden",
+    "actor_inference_required",
     "actor_pending",
     "actor_rng_budget",
     "actor_size",
