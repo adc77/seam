@@ -447,6 +447,18 @@ class ViewerTests(unittest.TestCase):
             )
         self.assertEqual(hashes(self.good), before)
 
+    def test_http_startup_does_not_require_reverse_dns(self):
+        with patch(
+            "socket.getfqdn", side_effect=AssertionError("reverse DNS must not run")
+        ) as lookup:
+            with serving([("Counter", self.good)]) as server:
+                self.assertEqual(server.server_name, "localhost")
+                self.assertEqual(server.server_port, server.server_address[1])
+                self.assertTrue(server.server_address[0].startswith("127."))
+                self.assertEqual(request(server, server.prefix)[0], 200)
+                self.assertEqual(request(server, server.prefix + "api/experiments")[0], 200)
+            lookup.assert_not_called()
+
     def test_http_sessions_have_distinct_tokens_and_no_remote_bind_option(self):
         with (
             ViewerServer([("Counter", self.good)]) as left,

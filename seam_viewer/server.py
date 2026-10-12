@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 import re
 import secrets
+from socketserver import TCPServer
 from urllib.parse import urlsplit
 
 from seam.canon import dumps
@@ -38,6 +39,12 @@ class ViewerServer(HTTPServer):
         super().__init__(("localhost", port), Handler)
         self.origin = f"http://localhost:{self.server_port}"
         self.url = self.origin + self.prefix
+
+    def server_bind(self):
+        """Bind locally without HTTPServer's unused, potentially blocking reverse-DNS lookup."""
+        TCPServer.server_bind(self)
+        self.server_name = "localhost"
+        self.server_port = self.server_address[1]
 
 
 class Handler(BaseHTTPRequestHandler):
