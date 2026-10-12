@@ -191,6 +191,25 @@ function renderOverview(experiment) {
     counts.append(card);
   });
   panel.append(counts);
+  if (experiment.inference) {
+    const usage = experiment.inference;
+    panel.append(
+      node("h3", "Model inference accounting"),
+      node(
+        "p",
+        `${usage.provider} · ${usage.model} · ${usage.reserved_calls} / ${usage.budget.max_calls} call reservations`,
+      ),
+      node(
+        "p",
+        `Accepted cost: ${usage.accepted_cost_microusd} micro-USD · Held for unresolved/rejected calls: ${usage.held_cost_microusd} micro-USD · Limit: ${usage.budget.max_cost_microusd} micro-USD`,
+      ),
+      node(
+        "p",
+        "Reservations are conservative dispatch allowances, not invoices. Matching seeds pair scenario inputs, not independent model outputs. Replay uses recorded decisions without inference.",
+        "comparison-intro",
+      ),
+    );
+  }
   const metadata = node("div", undefined, "metadata");
   metadata.append(
     node("span", `Adapter: ${experiment.plan.adapter}`),
@@ -326,7 +345,21 @@ function renderRun(run) {
       );
   }
   if (row.error) status.append(node("span", row.error));
+  if (row.inference) {
+    status.append(
+      node(
+        "span",
+        `${row.inference.reserved_calls} inference call reservations · ${row.inference.accepted_cost_microusd} accepted micro-USD · ${row.inference.held_cost_microusd} held micro-USD`,
+      ),
+    );
+  }
   byId("run-status").append(status);
+  if (run.inference_json)
+    disclosure(
+      byId("state"),
+      "Model requests, responses, and reservations (private evidence)",
+      run.inference_json,
+    );
   if (!run.artifact) {
     ["personas", "timeline"].forEach((id) =>
       byId(id).append(

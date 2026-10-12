@@ -48,7 +48,7 @@ Checksums detect changed evidence; they are not signatures or proof of exporter 
 - Summary/metadata reads are bounded by the experiment report limit (16 MiB); individual artifacts/inputs by 32 MiB. Selected-cell reads and encoded HTTP responses each have a 64 MiB limit. Oversized evidence/responses are refused explicitly.
 - The single-request local server verifies reports synchronously. Large ensembles may take time to recheck; this is not a concurrent analytics service.
 - The viewer reads completed experiment folders only. It does not inspect arbitrary standalone artifacts or active inference journals, resume experiments, edit scenarios, launch jobs, migrate journals, or create checkpoint forks.
-- Current experiment orchestration supports rule-mode populations. Integrating model-driven personas into paired sweeps and certifying live providers remain separate work.
+- Completed rule-mode and [model-driven](INFERENCE_EXPERIMENTS.md) ensembles are supported. Model-mode views include exact trajectory populations, accepted costs, unresolved/rejected cost holds, and retained request/response/reservation evidence. Live-provider certification remains separate work.
 
 ## Verification
 

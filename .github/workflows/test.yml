@@ -131,6 +131,11 @@ jobs:
           cd "$RUNNER_TEMP"
           env -u PYTHONPATH python -m seam_viewer.proof --out "$RUNNER_TEMP/viewer-proof" --installed
 
+      - name: Installed model-mode paired experiments and offline replay
+        run: |
+          cd "$RUNNER_TEMP"
+          env -u PYTHONPATH python -m seam.proof.inference_experiments --out "$RUNNER_TEMP/inference-experiment-proof" --installed
+
   guard:
     name: guard closes on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

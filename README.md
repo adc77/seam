@@ -8,6 +8,8 @@ The optional [experiment runner](EXPERIMENTS.md) compares declared scenarios acr
 
 The optional [local evidence viewer](VIEWER.md) opens explicitly selected experiment folders, with paired comparisons, persona observations/memory/decisions, and recorded product timelines. It is a separate read-only companion: no product execution, model calls, runtime changes, or external UI dependencies.
 
+The opt-in [model-driven experiment controller](INFERENCE_EXPERIMENTS.md) connects provider-neutral personas to paired comparisons with durable cell journals, experiment-wide dispatch reservations, explicit uncertainty, and provider-free strict replay. Existing rule-mode experiments are unchanged.
+
 Working title. A generalized simulation SDK: run a product's own handlers in a separate seeded process against scripts, cut-off recordings, or isolated stateful backends initialized from production exports. Glass is one consumer, not the SDK's domain.
 
 The original v1 spec is [PLAN.md](PLAN.md); export-backed v2 is in [SIMULATION.md](SIMULATION.md), and opt-in v3 shared dependency worlds and checkpoints are in [WORLDS.md](WORLDS.md). Apache-2.0.

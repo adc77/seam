@@ -43,6 +43,14 @@ def plan(adapter, variants, seeds, *, baseline, timeout_s=30):
 
 
 def _plan(value):
+    if (
+        type(value) is dict
+        and type(value.get("version")) is int
+        and value["version"] == 2
+    ):
+        from seam.inference_experiments import _plan as inference_plan
+
+        return inference_plan(value)
     try:
         value = deep_copy(value)
         if (
@@ -288,7 +296,7 @@ def _summary(spec, metrics, rows):
                 key: _stats([row["delta"][key] for row in pairs]) for key in metrics
             },
         }
-    return {
+    result = {
         "format": "seam-experiment-summary",
         "version": 1,
         "status": "passed"
@@ -300,11 +308,19 @@ def _summary(spec, metrics, rows):
         "aggregates": aggregates,
         "comparisons": comparisons,
     }
+    if spec["version"] == 2:
+        from seam.inference_experiments import _accounting
+
+        result["version"] = 2
+        result["inference"] = _accounting(spec, rows)
+    return result
 
 
 def run_experiment(directory, specification, *, env=None):
     """Run each variant/seed in a fresh directory; failures remain visible and incomplete pairs are labeled."""
     spec = _plan(specification)
+    if spec["version"] != 1:
+        raise ExperimentError("experiment_requires_inference_controller")
     if env is None:
         env = {}
     if (
@@ -477,6 +493,10 @@ def read_experiment(directory):
                 and evidence.get(row["artifact"]) != row["artifact_sha256"]
             ):
                 raise ExperimentError("experiment_evidence_changed")
+        if specification["version"] == 2:
+            from seam.inference_experiments import _verify_inference
+
+            _verify_inference(root, specification, summary["runs"], evidence)
         expected = _summary(specification, manifest["units"], summary["runs"])
         expected["evidence"] = evidence
         if expected != summary:

@@ -139,7 +139,8 @@ def _write(path, value):
 
 
 def _worker(connection, provider, request, lock_fd):
-    os.close(lock_fd)
+    for fd in (lock_fd,) if type(lock_fd) is int else lock_fd:
+        os.close(fd)
     try:
         value = provider(deep_copy(request))
         data = dumps(_bounded(value)).encode("ascii")
@@ -184,7 +185,17 @@ class InferenceRun:
     """Own a private single-writer journal; never silently repeat a possibly sent provider request."""
 
     @classmethod
-    def create(cls, directory, module, case_path, *, config, world="actors", env=None):
+    def create(
+        cls,
+        directory,
+        module,
+        case_path,
+        *,
+        config,
+        world="actors",
+        env=None,
+        timeout_s=None,
+    ):
         env = {} if env is None else env
         if (
             type(env) is not dict
@@ -193,6 +204,10 @@ class InferenceRun:
         ):
             raise InferenceError("bad_environment")
         config = _settings(config)
+        if timeout_s is not None and (
+            type(timeout_s) is not int or not 1 <= timeout_s <= 300
+        ):
+            raise InferenceError("bad_execution_timeout")
         case_path = Path(case_path)
         with case_path.open("rb") as handle:
             raw = handle.read(MAX_CASE + 1)
@@ -221,6 +236,8 @@ class InferenceRun:
             raise InferenceError("bad_actor_world") from None
         if actors["mode"] != "inference" or actors["tape"]:
             raise InferenceError("inference_requires_empty_prefix")
+        if sum(value["dataset"] == dataset for value in case["worlds"].values()) != 1:
+            raise InferenceError("one_inference_world_required")
         if any(
             name != dataset
             and type(value) is dict
@@ -242,6 +259,8 @@ class InferenceRun:
             "identity": _identity(module, env),
             "original_case_sha256": hashlib.sha256(raw).hexdigest(),
         }
+        if timeout_s is not None:
+            manifest["timeout_s"] = timeout_s
         if len(dumps(manifest).encode("ascii")) > MAX_MANIFEST:
             raise InferenceError("manifest_size")
         root = Path(directory)
@@ -415,7 +434,19 @@ class InferenceRun:
             case["namespace"],
             str(root / "artifact.json"),
             env=self.manifest["env"],
+            timeout=self.manifest["timeout_s"] if "timeout_s" in self.manifest else 30,
         )
+        with self.db:
+            self._set(
+                "last_result",
+                {
+                    "artifact": str(Path(result.artifact_path).relative_to(self.root)),
+                    "sha256": hashlib.sha256(
+                        Path(result.artifact_path).read_bytes()
+                    ).hexdigest(),
+                    "returncode": result.returncode,
+                },
+            )
         self._check_identity()
         provenance = result.artifact.get("provenance", {})
         identity = self.manifest["identity"]
@@ -572,7 +603,7 @@ class InferenceRun:
                 (dumps(response), n),
             )
 
-    def invoke(self, provider):
+    def invoke(self, provider, *, _close_fds=()):
         """Durably mark possible dispatch before calling a bounded external worker; uncertain calls are never retried."""
         request = self.next_request()
         if isinstance(request, ProcessResult):
@@ -588,7 +619,10 @@ class InferenceRun:
                 raise InferenceError("inference_uncertain")
         try:
             response = _call(
-                provider, request, self.manifest["config"]["timeout_ms"], self.lock_fd
+                provider,
+                request,
+                self.manifest["config"]["timeout_ms"],
+                (self.lock_fd, *_close_fds),
             )
         except BaseException:
             with self.db:

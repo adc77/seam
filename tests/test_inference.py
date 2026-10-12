@@ -69,6 +69,26 @@ def new_run(root, **changes):
 
 
 class InferenceTests(unittest.TestCase):
+    def test_shared_actor_dataset_does_not_authorize_two_inference_worlds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with new_run(root):
+                pass
+            path = root / "case.json"
+            value = loads(path.read_bytes())
+            value["worlds"]["other"] = {"dataset": value["worlds"]["actors"]["dataset"]}
+            value["ports"]["other"] = {"mode": "world", "world": "other"}
+            path.write_text(dumps(value))
+            with self.assertRaisesRegex(InferenceError, "one_inference_world_required"):
+                InferenceRun.create(
+                    root / "alias",
+                    "seam.proof.actors",
+                    path,
+                    config=config(),
+                    env={"PYTHONPATH": REPO},
+                )
+            self.assertFalse((root / "alias").exists())
+
     def test_inference_prefix_schema_and_changed_observation_are_strict(self):
         for record in (
             {},

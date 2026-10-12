@@ -106,6 +106,7 @@ class Experiment:
                 for name, comparison in self.summary["comparisons"].items()
             },
             "summary_sha256": self.summary_hash,
+            "inference": self.summary.get("inference"),
         }
 
     def run(self, index):
@@ -126,6 +127,12 @@ class Experiment:
             result = _read(self.root, result_name, evidence[result_name], MAX_REPORT)
             if loads(result) != row:
                 raise EvidenceError("viewer_evidence_changed")
+            inference_bytes = 0
+            if "inference" in row and "evidence" in row["inference"]:
+                name = row["inference"]["evidence"]
+                data = _read(self.root, name, evidence[name], MAX_REPORT)
+                inference_bytes = len(data)
+                view["inference_json"] = pretty(loads(data))
             if "artifact" not in row:
                 return view
             raw = _read(
@@ -136,13 +143,23 @@ class Experiment:
                 raise EvidenceError("viewer_artifact_schema")
             populations = {}
             port_worlds = {}
-            used = len(raw) + len(result)
+            used = len(raw) + len(result) + inference_bytes
             inputs_name = f"{cell}/inputs.json"
             inputs_raw = _read(
                 self.root, inputs_name, evidence[inputs_name], MAX_REPORT
             )
             inputs = loads(inputs_raw)
             used += len(inputs_raw)
+            if "trajectory_inputs" in row:
+                name = row["trajectory_inputs"]
+                data = _read(
+                    self.root,
+                    name,
+                    evidence[name],
+                    min(MAX_REPORT, MAX_RUN_BYTES - used),
+                )
+                used += len(data)
+                inputs["sha256"].update(loads(data)["sha256"])
             for relative, sha in inputs["sha256"].items():
                 name = f"{cell}/{relative}"
                 if evidence.get(name) != sha:
