@@ -1,5 +1,7 @@
 # Offline reactive actors
 
+The separately reviewed [external inference increment](INFERENCE.md) adds an explicit response-prefix protocol. The rule/replay behavior below remains the offline contract.
+
 Seam 0.5 adds an optional `seam.actors` module. A persona can observe a product, choose an authorized action, remember its result, and act again. Product handlers and dependency adapters still own business rules.
 
 This first increment is offline and synchronous. It provides scripted/seeded Python policies, recorded decisions, private JSON memory, deterministic wakeups, and checkpoint recovery. It does not provide LLM inference, a UI, notification subscriptions, or editable checkpoint forks.
