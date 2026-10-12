@@ -55,6 +55,18 @@ STOP_REASONS = {
 #: `STOP_REASONS` because the two are different kinds of thing: adding a fault
 #: code means raising it, adding a stop reason means setting it.
 FAULT_CODES = {
+    "actor_action_forbidden",
+    "actor_budget",
+    "actor_live_forbidden",
+    "actor_pending",
+    "actor_rng_budget",
+    "actor_size",
+    "actor_stale",
+    "actor_state",
+    "actor_tape_exhausted",
+    "actor_tape_mismatch",
+    "actor_tape_unused",
+    "bad_actor",
     "real_io",
     "real_clock",
     "unseeded_random",
