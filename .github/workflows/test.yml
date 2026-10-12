@@ -118,6 +118,11 @@ jobs:
           cd "$RUNNER_TEMP"
           python -m seam.proof.inference --out "$RUNNER_TEMP/inference-proof" --installed
 
+      - name: Installed paired offline experiments
+        run: |
+          cd "$RUNNER_TEMP"
+          python -m seam.proof.experiments --out "$RUNNER_TEMP/experiment-proof" --installed
+
   guard:
     name: guard closes on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

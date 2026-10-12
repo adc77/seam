@@ -54,6 +54,19 @@ def plan():
 
 
 class CaptureTests(unittest.TestCase):
+    def test_explicit_seed_preserves_default_and_rejects_invalid_values_before_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            default = write_capture_case(document(), root / "default", module=MODULE, **plan())
+            explicit = write_capture_case(document(), root / "explicit", module=MODULE, seed=7, **plan())
+            self.assertEqual(json.loads(default.read_text())["seed"], 1842)
+            self.assertEqual(json.loads(explicit.read_text())["seed"], 7)
+            for index, seed in enumerate((True, -1, 2**64, "7")):
+                target = root / f"bad-{index}"
+                with self.subTest(seed=seed), self.assertRaises(CaptureError):
+                    write_capture_case(document(), target, module=MODULE, seed=seed, **plan())
+                self.assertFalse(target.exists())
+
     def test_package_replay_and_no_duplicate_arrivals_without_boundary_handlers(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

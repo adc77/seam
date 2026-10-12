@@ -1,8 +1,10 @@
 # seam
 
-The optional [reactive actor layer](ACTORS.md) adds offline personas, decision tapes, and checkpointable private memory on the 0.5 feature branch. Existing product handlers remain the source of business behavior.
+The optional [reactive actor layer](ACTORS.md) adds offline personas, decision tapes, and checkpointable private memory. Existing product handlers remain the source of business behavior.
 
-The separately reviewed [external inference handoff](INFERENCE.md) adds durable provider-free decision barriers and offline replay on the 0.6 feature branch. It does not bundle a model client or weaken ordinary checkpoint identity checks.
+The [external inference handoff](INFERENCE.md) adds durable provider-neutral decision barriers and offline replay. It does not bundle a model client or weaken ordinary checkpoint identity checks.
+
+The optional [experiment runner](EXPERIMENTS.md) compares declared scenarios across paired seeds, retains isolated inputs/artifacts, verifies evidence, and reports failures explicitly. Seam 0.7 keeps product-specific population generation and metrics in application-owned adapters.
 
 Working title. A generalized simulation SDK: run a product's own handlers in a separate seeded process against scripts, cut-off recordings, or isolated stateful backends initialized from production exports. Glass is one consumer, not the SDK's domain.
 

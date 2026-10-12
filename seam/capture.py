@@ -199,6 +199,7 @@ def write_capture_case(
     until_ns=None,
     config=None,
     same_time_order="sequence",
+    seed=1842,
 ):
     validate_capture(document, module=module)
     payload = document["payload"]
@@ -233,7 +234,7 @@ def write_capture_case(
         "format": "seam-case",
         "version": 3,
         "name": name,
-        "seed": 1842,
+        "seed": seed,
         "namespace": namespace,
         "clock": {"start_ns": start, "epoch": "1970-01-01T00:00:00Z"},
         "config": _copy(payload["config"] if config is None else config),
