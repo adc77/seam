@@ -37,6 +37,9 @@ jobs:
       - name: Run the suite
         run: python -m unittest discover -s tests -t . -v
 
+      - name: Check the buildless viewer JavaScript
+        run: node --check seam_viewer/static/app.js
+
       - name: The proof still runs from a clean checkout
         run: |
           case=seam/proof/checkout/cases/declined.json
@@ -122,6 +125,11 @@ jobs:
         run: |
           cd "$RUNNER_TEMP"
           python -m seam.proof.experiments --out "$RUNNER_TEMP/experiment-proof" --installed
+
+      - name: Installed read-only viewer and packaged assets
+        run: |
+          cd "$RUNNER_TEMP"
+          env -u PYTHONPATH python -m seam_viewer.proof --out "$RUNNER_TEMP/viewer-proof" --installed
 
   guard:
     name: guard closes on ${{ matrix.os }}

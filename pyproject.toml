@@ -22,3 +22,4 @@ include = ["seam*"]
 
 [tool.setuptools.package-data]
 seam = ["proof/checkout/cases/*.json", "proof/inventory/cases/*.json", "proof/shared_store/cases/*.json"]
+seam_viewer = ["static/*.html", "static/*.css", "static/*.js", "static/*.svg"]

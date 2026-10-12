@@ -6,6 +6,8 @@ The [external inference handoff](INFERENCE.md) adds durable provider-neutral dec
 
 The optional [experiment runner](EXPERIMENTS.md) compares declared scenarios across paired seeds, retains isolated inputs/artifacts, verifies evidence, and reports failures explicitly. Seam 0.7 keeps product-specific population generation and metrics in application-owned adapters.
 
+The optional [local evidence viewer](VIEWER.md) opens explicitly selected experiment folders, with paired comparisons, persona observations/memory/decisions, and recorded product timelines. It is a separate read-only companion: no product execution, model calls, runtime changes, or external UI dependencies.
+
 Working title. A generalized simulation SDK: run a product's own handlers in a separate seeded process against scripts, cut-off recordings, or isolated stateful backends initialized from production exports. Glass is one consumer, not the SDK's domain.
 
 The original v1 spec is [PLAN.md](PLAN.md); export-backed v2 is in [SIMULATION.md](SIMULATION.md), and opt-in v3 shared dependency worlds and checkpoints are in [WORLDS.md](WORLDS.md). Apache-2.0.

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      name="description"
+      content="Private, read-only inspection of verified Seam simulation evidence."
+    />
+    <title>Seam · Simulation evidence</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="style.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Skip to evidence</a>
+    <aside class="sidebar" aria-label="Experiment navigation">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">s</span>
+        <div>seam<span>SIMULATION INSPECTOR</span></div>
+      </div>
+      <div class="sidebar-heading">EXPERIMENTS</div>
+      <nav id="experiments" aria-label="Selected experiments"></nav>
+      <button id="refresh" class="quiet-button" type="button">
+        Recheck evidence
+      </button>
+      <div class="sidebar-footer">
+        <span class="live-dot" aria-hidden="true"></span> Local · read only
+        <p>
+          No execution. No model calls.<br />No external assets or services.
+        </p>
+      </div>
+    </aside>
+    <main id="content">
+      <header class="page-header">
+        <div>
+          <div class="eyebrow">OBSERVE / UNDERSTAND / COMPARE</div>
+          <h1>Simulation evidence</h1>
+          <p>Follow the decisions. Inspect the actual product outcomes.</p>
+        </div>
+        <span class="pill neutral">PRIVATE LOCAL SESSION</span>
+      </header>
+      <div id="notice" role="status" aria-live="polite"></div>
+      <section id="overview" aria-label="Experiment overview"></section>
+      <section id="run-section" class="panel" aria-label="Run inspector" hidden>
+        <div class="panel-heading">
+          <div>
+            <div class="eyebrow">RUN INSPECTOR</div>
+            <h2 id="run-title">Explore a run</h2>
+          </div>
+          <div class="run-picker">
+            <label for="run-select">Variant / seed</label
+            ><select id="run-select"></select>
+          </div>
+        </div>
+        <div id="run-status"></div>
+        <div class="tabs" role="tablist" aria-label="Run evidence">
+          <button
+            id="tab-personas"
+            role="tab"
+            aria-controls="personas"
+            aria-selected="true"
+            type="button"
+          >
+            Personas
+          </button>
+          <button
+            id="tab-timeline"
+            role="tab"
+            aria-controls="timeline"
+            aria-selected="false"
+            tabindex="-1"
+            type="button"
+          >
+            Timeline
+          </button>
+          <button
+            id="tab-state"
+            role="tab"
+            aria-controls="state"
+            aria-selected="false"
+            tabindex="-1"
+            type="button"
+          >
+            State &amp; failures
+          </button>
+        </div>
+        <div id="personas" role="tabpanel" aria-labelledby="tab-personas"></div>
+        <div
+          id="timeline"
+          role="tabpanel"
+          aria-labelledby="tab-timeline"
+          hidden
+        ></div>
+        <div
+          id="state"
+          role="tabpanel"
+          aria-labelledby="tab-state"
+          hidden
+        ></div>
+      </section>
+      <footer class="page-footer">
+        Synthetic personas are assumptions, not calibrated human behavior. A
+        passed engine run is not a validated forecast.
+      </footer>
+    </main>
+  </body>
+</html>
