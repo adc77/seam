@@ -116,13 +116,16 @@ def _population(value):
         if value["mode"] == "inference":
             _fields(record, ("request", "decision"))
             _request(record["request"])
-            _decision(record["decision"])
+            _validate_selection(record["request"], _decision(record["decision"]))
         else:
             _record(record)
     return _bounded(value)
 
 
 def _decision(value):
+    if type(value) is dict and set(value) == {"choice"}:
+        _identifier(value["choice"])
+        return _bounded(value)
     _fields(value, ("action", "memory", "wake_after_ns"))
     action, delay = value["action"], value["wake_after_ns"]
     if action is not None:
@@ -133,11 +136,59 @@ def _decision(value):
     return _bounded(value)
 
 
+def choice(choice_id, description, decision):
+    """Offer one product-owned action, memory transition, and next-decision delay."""
+    _identifier(choice_id)
+    if (
+        type(description) is not str
+        or not description.strip()
+        or len(description) > 512
+        or any(ord(char) < 32 for char in description)
+    ):
+        raise Fault("bad_actor_choice")
+    decision = _decision(decision)
+    if "choice" in decision:
+        raise Fault("bad_actor_choice")
+    if decision["action"] is not None and decision["wake_after_ns"] is None:
+        raise Fault("actor_choice_followup")
+    if decision["action"] is None and decision["wake_after_ns"] == 0:
+        raise Fault("actor_choice_progress")
+    return _bounded({"id": choice_id, "description": description, "decision": decision})
+
+
+def _validate_selection(request, decision):
+    if "choices" not in request:
+        if "choice" in decision:
+            raise Fault("actor_choice_forbidden")
+        return
+    if set(decision) != {"choice"} or decision["choice"] not in {
+        option["id"] for option in request["choices"]
+    }:
+        raise Fault("actor_choice_forbidden")
+
+
 def _record(value):
-    _fields(value, ("request", "decision", "rng_after", "delivery"))
+    fields = {"request", "decision", "rng_after", "delivery"}
+    if type(value) is not dict or set(value) not in (fields, fields | {"resolution"}):
+        raise Fault("bad_actor")
     request = value["request"]
     _request(request)
-    _decision(value["decision"])
+    decision = _decision(value["decision"])
+    _validate_selection(request, decision)
+    if ("choices" in request) != ("resolution" in value):
+        raise Fault("bad_actor")
+    if "resolution" in value:
+        resolved = _decision(value["resolution"])
+        if "choice" in resolved:
+            raise Fault("bad_actor")
+        offered = next(
+            item for item in request["choices"] if item["id"] == decision["choice"]
+        )
+        if (
+            not equal(resolved["action"], offered["action"])
+            or resolved["wake_after_ns"] != offered["wake_after_ns"]
+        ):
+            raise Fault("actor_choice_changed")
     assert_int(
         value["rng_after"],
         minimum=request["rng_before"],
@@ -150,21 +201,20 @@ def _record(value):
 
 
 def _request(request):
-    _fields(
-        request,
-        (
-            "actor_id",
-            "policy",
-            "step",
-            "at_ns",
-            "profile",
-            "memory",
-            "observation",
-            "rng_before",
-            "seed",
-            "actions",
-        ),
-    )
+    fields = {
+        "actor_id",
+        "policy",
+        "step",
+        "at_ns",
+        "profile",
+        "memory",
+        "observation",
+        "rng_before",
+        "seed",
+        "actions",
+    }
+    if type(request) is not dict or set(request) not in (fields, fields | {"choices"}):
+        raise Fault("bad_actor")
     _identifier(request["actor_id"])
     _identifier(request["policy"])
     for field in ("step", "at_ns", "rng_before", "seed"):
@@ -177,6 +227,31 @@ def _request(request):
         _identifier(action)
     if len(set(request["actions"])) != len(request["actions"]):
         raise Fault("bad_actor")
+    if "choices" in request:
+        options = request["choices"]
+        if type(options) is not list or not 1 <= len(options) <= 32:
+            raise Fault("bad_actor_choice")
+        ids = set()
+        for option in options:
+            _fields(option, ("id", "description", "action", "wake_after_ns"))
+            item = choice(
+                option["id"],
+                option["description"],
+                {
+                    "action": option["action"],
+                    "memory": None,
+                    "wake_after_ns": option["wake_after_ns"],
+                },
+            )
+            if item["id"] in ids:
+                raise Fault("bad_actor_choice")
+            ids.add(item["id"])
+            action = option["action"]
+            delay = option["wake_after_ns"]
+            if action is not None and action["type"] not in request["actions"]:
+                raise Fault("actor_action_forbidden")
+            if delay is not None and request["at_ns"] + delay > INT64_MAX:
+                raise Fault("bad_actor_choice")
 
 
 class ActorRandom:
@@ -214,7 +289,7 @@ class ActorRandom:
 class ActorSystem:
     """Register an actor world, projected observations, authorized action mapping, and scheduler driver."""
 
-    def __init__(self, policies, observe, translate, *, name="actors"):
+    def __init__(self, policies, observe, translate, *, name="actors", choices=None):
         _identifier(name)
         if len(name) > 25 or type(policies) is not dict or not policies:
             raise Fault("bad_actor")
@@ -227,6 +302,64 @@ class ActorSystem:
         self.observe = observe
         self.translate = translate
         self.name = name
+        if choices is None:
+            choices = {}
+        if type(choices) is not dict or not set(choices) <= set(policies):
+            raise Fault("bad_actor_choice")
+        for fn in choices.values():
+            require_sync(fn)
+        self.choices = dict(choices)
+
+    def _options(self, request):
+        base = {key: value for key, value in request.items() if key != "choices"}
+        options = self.choices[request["policy"]](deep_copy(base))
+        require_sync_result(options)
+        if type(options) is not list or not 1 <= len(options) <= 32:
+            raise Fault("bad_actor_choice")
+        result, ids = [], set()
+        for option in options:
+            _fields(option, ("id", "description", "decision"))
+            option = choice(option["id"], option["description"], option["decision"])
+            action, delay = (
+                option["decision"]["action"],
+                option["decision"]["wake_after_ns"],
+            )
+            if option["id"] in ids:
+                raise Fault("bad_actor_choice")
+            ids.add(option["id"])
+            if action is not None and action["type"] not in request["actions"]:
+                raise Fault("actor_action_forbidden")
+            if delay is not None and request["at_ns"] + delay > INT64_MAX:
+                raise Fault("bad_actor_choice")
+            result.append(option)
+        return result
+
+    @staticmethod
+    def _menu(options):
+        return [
+            {
+                "id": item["id"],
+                "description": item["description"],
+                "action": item["decision"]["action"],
+                "wake_after_ns": item["decision"]["wake_after_ns"],
+            }
+            for item in options
+        ]
+
+    def _resolve(self, request, decision):
+        _validate_selection(request, decision)
+        if request["policy"] not in self.choices:
+            if "choices" in request:
+                raise Fault("actor_choice_forbidden")
+            return decision
+        options = self._options(request)
+        if "choices" not in request or not equal(
+            request["choices"], self._menu(options)
+        ):
+            raise Fault("actor_choice_changed")
+        return next(
+            item["decision"] for item in options if item["id"] == decision["choice"]
+        )
 
     def install(self, runtime):
         names = tuple(f"{self.name}_{suffix}" for suffix in ("start", "step", "finish"))
@@ -339,6 +472,8 @@ class ActorSystem:
                 "seed": spec["seed"],
                 "actions": actor["actions"],
             }
+            if actor["policy"] in self.choices:
+                policy_input["choices"] = self._menu(self._options(policy_input))
             rng = ActorRandom(spec["seed"], actor["id"], current["rng_counter"])
             if spec["mode"] == "inference":
                 index = len(state["decisions"])
@@ -365,7 +500,8 @@ class ActorSystem:
                 require_sync_result(decision)
                 decision = _decision(decision)
                 counter = rng.counter
-            action, delay = decision["action"], decision["wake_after_ns"]
+            resolved = self._resolve(policy_input, decision)
+            action, delay = resolved["action"], resolved["wake_after_ns"]
             if action is not None and action["type"] not in actor["actions"]:
                 raise Fault("actor_action_forbidden")
             next_ns = None if delay is None else ctx.now() + delay
@@ -376,7 +512,7 @@ class ActorSystem:
                 descriptor = {
                     "id": actor["id"],
                     "profile": actor["profile"],
-                    "memory": decision["memory"],
+                    "memory": resolved["memory"],
                 }
                 decision_id = "act_" + digest(policy_input)[:32]
                 delivery = self.translate(
@@ -396,12 +532,14 @@ class ActorSystem:
                 "rng_after": counter,
                 "delivery": delivery,
             }
+            if "choices" in policy_input:
+                record["resolution"] = resolved
             _record(record)
             if spec["mode"] == "replay" and not equal(record, recorded):
                 raise Fault("actor_tape_mismatch")
             updated = deep_copy(state)
             updated["actors"][actor["id"]] = {
-                "memory": decision["memory"],
+                "memory": resolved["memory"],
                 "step": current["step"] + 1,
                 "rng_counter": counter,
                 "next_ns": next_ns,
@@ -463,7 +601,22 @@ class ActorSystem:
                     or row["step"] >= actor["max_decisions"]
                 ):
                     raise Fault("actor_state")
-                decision = record["decision"]
+                decision = self._resolve(request, record["decision"])
+                if "choices" in request and not equal(decision, record["resolution"]):
+                    raise Fault("actor_choice_changed")
+                if "choices" in request and decision["action"] is not None:
+                    delivery = self.translate(
+                        {
+                            "id": actor_id,
+                            "profile": deep_copy(actor["profile"]),
+                            "memory": deep_copy(decision["memory"]),
+                        },
+                        deep_copy(decision["action"]),
+                        "act_" + digest(request)[:32],
+                    )
+                    require_sync_result(delivery)
+                    if not equal(delivery, record["delivery"]):
+                        raise Fault("actor_choice_changed")
                 if (
                     decision["action"] is not None
                     and decision["action"]["type"] not in actor["actions"]

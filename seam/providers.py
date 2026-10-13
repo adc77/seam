@@ -31,8 +31,14 @@ class ChatProvider:
         self.cost_microusd = cost_microusd
 
     def __call__(self, envelope):
+        instruction = INSTRUCTION
+        if "choices" in envelope["request"]:
+            instruction = (
+                'Return only {"choice": "one offered choice id"} from request.choices. '
+                "Do not invent actions, memory, delays, or choice IDs."
+            )
         messages = [
-            {"role": "user", "content": INSTRUCTION + "\n" + envelope["prompt"]}
+            {"role": "user", "content": instruction + "\n" + envelope["prompt"]}
         ]
         model, limits = envelope["model"], envelope["limits"]
         inputs = _integer(self.count_tokens(model, messages))

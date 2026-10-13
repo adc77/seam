@@ -219,6 +219,11 @@ def _project(artifact, populations, port_worlds):
             decisions = []
             for record in records.get(actor["id"], []):
                 request = record["request"]
+                resolved = (
+                    record["resolution"]
+                    if "resolution" in record
+                    else record["decision"]
+                )
                 key = (world_name, actor["id"], request["step"], request["at_ns"])
                 matching = decision_events.get(key, [])
                 decisions.append(
@@ -228,7 +233,7 @@ def _project(artifact, populations, port_worlds):
                         "event_i": matching[0] if len(matching) == 1 else None,
                         "observation_json": pretty(request["observation"]),
                         "memory_before_json": pretty(request["memory"]),
-                        "memory_after_json": pretty(record["decision"]["memory"]),
+                        "memory_after_json": pretty(resolved["memory"]),
                         "decision_json": pretty(record["decision"]),
                         "delivery_json": pretty(record["delivery"]),
                         "request_json": pretty(request),

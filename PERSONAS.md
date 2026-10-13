@@ -3,6 +3,9 @@
 `seam.personas` describes synthetic goals without choosing a model or changing actor execution.
 Use `persona(name, goals, constraints=...)` inside a product-approved `profile.persona` field.
 Use `goal_prompt(product_contract)` as an ordinary `seam.inference.settings` prompt.
+For models, prefer [`choice_prompt(product_contract)` with product-owned choices](CHOICES.md).
+This opt-in contract prevents models from inventing action parameters, editing memory,
+or controlling timing; the legacy goal prompt remains available for existing policies.
 The product contract describes action semantics, ownership, memory shape, units, and terminal outcomes.
 It must not supply the expected decision or a scripted transition table.
 

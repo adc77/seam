@@ -40,6 +40,7 @@ def envelope(model="provider/logical-model"):
         "returned_models": ["native-snapshot"],
         "temperature_milli": None,
         "prompt": "JSON actor decision context",
+        "request": {},
         "limits": {
             "max_input_tokens": 100,
             "max_output_tokens": 100,
@@ -78,6 +79,26 @@ def fake_counter_completion(**kwargs):
 
 
 class ProviderTests(unittest.TestCase):
+    def test_choice_policy_uses_small_provider_neutral_output_contract(self):
+        value = envelope()
+        value["request"] = {"choices": [{"id": "wait"}]}
+        transport = Mock(
+            return_value=completion(
+                choices=[
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": '{"choice":"wait"}'},
+                    }
+                ]
+            )
+        )
+        result = bridge(transport)(value)
+        self.assertEqual(result["decision"], {"choice": "wait"})
+        self.assertIn(
+            'Return only {"choice":',
+            transport.call_args.kwargs["messages"][0]["content"],
+        )
+
     def test_provider_routes_are_opaque_not_hardcoded_model_lists(self):
         for model in (
             "openai/model",

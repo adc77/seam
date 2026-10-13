@@ -85,6 +85,10 @@ Two identical replay cases produce byte-identical artifacts in the same controll
 
 ## Recovery
 
+Opt-in [choice policies](CHOICES.md) record both the selected intention and its trusted
+resolution. Their restore path also revalidates the menu, resolution, and translated
+delivery. The legacy behavior below remains unchanged.
+
 Actor state is a shared `World`, not hidden state in a callback closure or a product-state key. Existing v3 checkpoints already preserve its initialized snapshot together with the product, other worlds, scheduler queue, and pending timers.
 
 Restore validates population identity and reconstructs the actor memory/counter/wakeup state from accepted records without re-executing policy or translation callbacks. Per-actor step/observation requests reject duplicate or stale wakeups. Repeated fresh-process resumes preserve behavior digests and full history, although checkpoint/case provenance identifies the different operational inputs.

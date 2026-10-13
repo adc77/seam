@@ -57,6 +57,10 @@ STOP_REASONS = {
 FAULT_CODES = {
     "actor_action_forbidden",
     "actor_budget",
+    "actor_choice_changed",
+    "actor_choice_followup",
+    "actor_choice_forbidden",
+    "actor_choice_progress",
     "actor_live_forbidden",
     "actor_inference_required",
     "actor_pending",
@@ -68,6 +72,7 @@ FAULT_CODES = {
     "actor_tape_mismatch",
     "actor_tape_unused",
     "bad_actor",
+    "bad_actor_choice",
     "real_io",
     "real_clock",
     "unseeded_random",

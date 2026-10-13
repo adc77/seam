@@ -109,3 +109,6 @@ Optional [`seam.personas`](PERSONAS.md) adds versioned synthetic goals and const
 product-approved actor profiles. A model chooses actions from those goals and the product
 contract; ordinary inference limits, ownership checks, journals, and offline replay remain
 unchanged. It is provider-neutral and does not claim calibrated human behavior.
+
+Seam 0.10 adds [product-owned action choices](CHOICES.md): models select valid intentions,
+while adapters enforce action parameters, private memory transitions, and timing in code.

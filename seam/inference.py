@@ -16,6 +16,7 @@ from seam.actors import (
     _fields,
     _population,
     _request,
+    _validate_selection,
     population,
 )
 from seam.canon import deep_copy, digest, dumps, equal, loads
@@ -548,7 +549,8 @@ class InferenceRun:
             ):
                 raise InferenceError("inference_response_identity")
             decision = _decision(response["decision"])
-            action = decision["action"]
+            _validate_selection(request["request"], decision)
+            action = None if "choice" in decision else decision["action"]
             if (
                 action is not None
                 and action["type"] not in request["request"]["actions"]

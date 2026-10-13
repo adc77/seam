@@ -3,10 +3,18 @@
 import unittest
 
 from seam.canon import loads
-from seam.personas import goal_prompt, persona, validate_persona
+from seam.personas import choice_prompt, goal_prompt, persona, validate_persona
 
 
 class PersonaTests(unittest.TestCase):
+    def test_choice_prompt_is_explicit_and_keeps_legacy_prompt_unchanged(self):
+        prompt = choice_prompt("My product owns transitions and timing.")
+        self.assertEqual(loads(prompt)["version"], 4)
+        self.assertIn("request.choices", prompt)
+        self.assertEqual(loads(goal_prompt("Legacy contract."))["version"], 3)
+        with self.assertRaises(ValueError):
+            choice_prompt("")
+
     def test_round_trip_and_detachment(self):
         original = persona(
             "patient", ["Obtain one item"], constraints=["Retry at most twice"]
