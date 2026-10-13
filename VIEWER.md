@@ -38,7 +38,9 @@ An active session pins its summary and manifest. Run requests hash the exact byt
 
 HTTP serves only bundled assets and fixed experiment/run APIs behind the random session path. It rejects foreign Host/Origin headers, cross-site fetches, path/query browsing, and write methods. Responses are uncached, forbid framing, carry a strict same-origin content policy, and do not include raw filesystem paths. The UI uses text nodes for evidence; no HTML interpolation, remote fonts/scripts, or browser-side provider keys.
 
-All structured integer values cross the HTTP/JavaScript boundary as decimal strings, including seeds, nanoseconds, and wide aggregate sums. Raw JSON inspector blocks preserve the original numeric types. The UI shows exact fractions rather than rounding away large values or implying statistical significance.
+All structured integer values cross the HTTP/JavaScript boundary as decimal strings, including seeds, nanoseconds, and wide aggregate sums. Raw JSON inspector blocks preserve the original numeric types. BigInt formatting shows readable seconds and decimal means without floating-point conversion; truncated decimals are marked `≈`. Exact aggregate/difference statistics, original nanoseconds, and per-seed values remain available in disclosures and tooltips.
+
+Metric rows use the product's declared names and units; domain-specific units appear before generic counts and time. No product-specific success criteria are inferred. Engine checks, pairing status, and finished actor decisions are labeled separately from product-defined outcomes. Scripted and fake decision providers explicitly say they are not LLMs; an external provider label does not certify a real model or its behavior.
 
 Checksums detect changed evidence; they are not signatures or proof of exporter authenticity. The standard-library server is for one trusted local operator, not multi-user production hosting or hostile-filesystem isolation. Any local user who can access the selected files already has their contents. Do not load untrusted directories or introduce unreviewed provider secrets into evidence.
 
@@ -59,6 +61,8 @@ python -m seam_viewer --experiment Glass=/path/to/experiment --check
 ```
 
 Exit 0 means all selected reports are available; exit 1 means at least one is incomplete/invalid; exit 2 means invalid CLI/configuration. A completed experiment with failed cells can still be valid evidence: check its displayed status and pair exclusions.
+
+Relative selections resolve from your current working directory. Prefer an absolute experiment path when opening a new terminal. Missing directories, files selected instead of folders, and folders without completed summaries receive actionable hints. `--check` keeps JSON on stdout and diagnostics on stderr; private CLI diagnostics may include the selected path, but HTTP responses never do. The viewer never creates missing directories or repairs evidence.
 
 Run the actual installed-process proof from outside the checkout:
 

@@ -25,8 +25,8 @@ function button(text, callback, className) {
   return element;
 }
 
-function pill(status) {
-  return node("span", status.toUpperCase(), `pill ${status}`);
+function pill(status, label = status) {
+  return node("span", label.toUpperCase(), `pill ${status}`);
 }
 function clear(element) {
   element.replaceChildren();
@@ -41,11 +41,8 @@ function disclosure(parent, title, value) {
   details.append(node("summary", title), node("pre", value));
   parent.append(details);
 }
-function fraction(value) {
-  return value === null ? "—" : `${value.numerator}/${value.denominator}`;
-}
 function ns(value) {
-  return value === null ? "none" : `${value} ns`;
+  return value === null ? "none" : metricValue(value, "ns");
 }
 function notice(text, error = false) {
   clear(byId("notice"));
@@ -147,7 +144,7 @@ function selectExperiment(experiment) {
   clear(byId("overview"));
   byId("run-section").hidden = true;
   if (!experiment.available) {
-    notice(`Cannot inspect ${experiment.label}: ${experiment.error}`, true);
+    notice(`Cannot inspect ${experiment.label}: ${experiment.error}. ${experiment.error_hint}`, true);
     return;
   }
   notice("");
@@ -157,7 +154,7 @@ function selectExperiment(experiment) {
   experiment.runs.forEach((row, index) => {
     const option = node(
       "option",
-      `${row.variant} · seed ${row.seed} · ${row.status}`,
+      `${row.variant} · seed ${row.seed} · engine checks ${row.status}`,
     );
     option.value = String(index);
     select.append(option);
@@ -174,7 +171,7 @@ function renderOverview(experiment) {
     node("div", "PAIRED SCENARIO COMPARISON", "eyebrow"),
     node("h2", experiment.label),
   );
-  heading.append(title, pill(experiment.status));
+  heading.append(title, pill(experiment.status, `Engine checks ${experiment.status}`));
   panel.append(heading);
   const counts = node("div", undefined, "summary-grid");
   const passed = experiment.runs.filter(
@@ -183,8 +180,8 @@ function renderOverview(experiment) {
   [
     [experiment.plan.variants.length, "Variants"],
     [experiment.plan.seeds.length, "Paired seeds"],
-    [passed, "Passed runs"],
-    [experiment.runs.length - passed, "Failed runs"],
+    [passed, "Engine checks passed"],
+    [experiment.runs.length - passed, "Engine checks failed"],
   ].forEach(([value, label]) => {
     const card = node("div", undefined, "summary-card");
     card.append(node("strong", value), node("span", label));
@@ -194,7 +191,7 @@ function renderOverview(experiment) {
   if (experiment.inference) {
     const usage = experiment.inference;
     panel.append(
-      node("h3", "Model inference accounting"),
+      node("h3", controllerDescription(usage.provider)),
       node(
         "p",
         `${usage.provider} · ${usage.model} · ${usage.reserved_calls} / ${usage.budget.max_calls} call reservations`,
@@ -220,33 +217,29 @@ function renderOverview(experiment) {
     metadata,
     node(
       "p",
-      "Differences are variant − baseline for the same seed. Exact means are fractions; failed pairs are excluded explicitly. These are observations, not statistical significance.",
+      "Engine checks do not establish business success or persona goal completion. Differences are variant − baseline for the same seed; failed pairs are excluded. Approximate decimals are marked ≈; exact values are retained below. These are observations, not statistical significance.",
       "comparison-intro",
     ),
   );
-  const totals = table([
-    "Variant",
-    "Passed / failed",
-    ...Object.keys(experiment.units).map(
-      (key) => `${key} · mean (${experiment.units[key]})`,
-    ),
-  ]);
-  experiment.plan.variants.forEach((variant) => {
-    const aggregate = experiment.aggregates[variant.name];
-    fieldRow(totals.body, [
-      variant.name,
-      `${aggregate.passed} / ${aggregate.failed}`,
-      ...Object.keys(experiment.units).map((key) =>
-        fraction(aggregate.metrics[key].mean),
-      ),
+  panel.append(node("h3", "Product-defined outcomes and run metrics"));
+  const variants = experiment.plan.variants.map((variant) => variant.name);
+  const keys = metricKeys(experiment.units);
+  const totals = table(["Metric / mean", ...variants]);
+  keys.forEach((key) => {
+    const unit = experiment.units[key];
+    const row = fieldRow(totals.body, [
+      `${metricLabel(key)} (${unit === "ns" ? "seconds" : unit})`,
+      ...variants.map((name) => metricValue(experiment.aggregates[name].metrics[key].mean, unit)),
     ]);
+    row.title = JSON.stringify(Object.fromEntries(variants.map((name) => [name, experiment.aggregates[name].metrics[key].mean])));
   });
   panel.append(totals.wrap);
+  disclosure(panel, "Exact aggregate statistics (original units)", JSON.stringify(experiment.aggregates, null, 2));
   Object.entries(experiment.comparisons).forEach(([name, comparison]) => {
     const label = node("div", undefined, "comparison-heading");
     label.append(
       node("h3", `${name} versus ${comparison.baseline}`),
-      pill(comparison.status),
+      pill(comparison.status, `Pairing ${comparison.status}`),
     );
     panel.append(label);
     panel.append(
@@ -263,17 +256,21 @@ function renderOverview(experiment) {
       "Maximum",
       "Paired count",
     ]);
-    Object.entries(comparison.delta).forEach(([key, stats]) => {
+    keys.forEach((key) => {
+      const stats = comparison.delta[key];
+      const unit = experiment.units[key];
       const row = fieldRow(deltas.body, [
-        key,
-        fraction(stats.mean),
-        stats.min === null ? "—" : stats.min,
-        stats.max === null ? "—" : stats.max,
+        metricLabel(key),
+        metricValue(stats.mean, unit),
+        metricValue(stats.min, unit),
+        metricValue(stats.max, unit),
         stats.count,
       ]);
-      row.firstChild.append(node("span", experiment.units[key], "metric-unit"));
+      row.title = JSON.stringify(stats);
+      row.firstChild.append(node("span", unit === "ns" ? "seconds" : unit, "metric-unit"));
     });
     panel.append(deltas.wrap);
+    disclosure(panel, "Exact difference statistics (original units)", JSON.stringify(comparison.delta, null, 2));
     disclosure(
       panel,
       "Per-seed paired differences",
@@ -330,7 +327,7 @@ function renderRun(run) {
   byId("run-title").textContent = `${row.variant} · seed ${row.seed}`;
   clear(byId("run-status"));
   const status = node("div", undefined, "metadata");
-  status.append(pill(row.status));
+  status.append(pill(row.status, `Engine checks ${row.status}`));
   if (run.artifact) {
     status.append(
       node(
@@ -339,10 +336,6 @@ function renderRun(run) {
       ),
       node("span", `Artifact SHA-256: ${row.artifact_sha256.slice(0, 12)}`),
     );
-    if (row.metrics && row.metrics.unfinished_actors !== undefined)
-      status.append(
-        node("span", `${row.metrics.unfinished_actors} unfinished personas`),
-      );
   }
   if (row.error) status.append(node("span", row.error));
   if (row.inference) {
@@ -354,10 +347,23 @@ function renderRun(run) {
     );
   }
   byId("run-status").append(status);
+  if (row.metrics) {
+    byId("run-status").append(node("h3", "Product-defined outcomes and run metrics"));
+    const outcomes = table(["Metric", "Observed value"]);
+    metricKeys(model.experiment.units).forEach((key) => {
+      const unit = model.experiment.units[key];
+      const item = fieldRow(outcomes.body, [
+        `${metricLabel(key)} (${unit === "ns" ? "seconds" : unit})`,
+        metricValue(row.metrics[key], unit),
+      ]);
+      item.title = `${key}: ${row.metrics[key]} ${unit}`;
+    });
+    byId("run-status").append(outcomes.wrap);
+  }
   if (run.inference_json)
     disclosure(
       byId("state"),
-      "Model requests, responses, and reservations (private evidence)",
+      "Decision-provider requests, responses, and reservations (private evidence)",
       run.inference_json,
     );
   if (!run.artifact) {
@@ -424,7 +430,7 @@ function renderPersonas(actors) {
     const header = node("div", undefined, "actor-header");
     header.append(
       node("h2", actor.id),
-      pill(actor.next_ns === null ? "complete" : "unfinished"),
+      pill("neutral", actor.next_ns === null ? "Decisions finished" : "Decision pending"),
     );
     inspector.append(header);
     inspector.append(
@@ -498,9 +504,12 @@ function renderPersonas(actors) {
       detail.append(memory);
       jsonBlock(
         detail,
-        "Accepted decision / action / next wake",
+        "Accepted selection",
         decision.decision_json,
       );
+      if (decision.choices_json)
+        disclosure(detail, "Product-authorized choices offered", decision.choices_json);
+      jsonBlock(detail, "Resolved action / memory / next wake", decision.resolution_json);
       jsonBlock(detail, "Translated product delivery", decision.delivery_json);
       disclosure(detail, "Exact policy request", decision.request_json);
       if (decision.event_i !== null)

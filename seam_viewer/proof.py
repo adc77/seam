@@ -69,7 +69,7 @@ def proof(root, installed):
             finally:
                 connection.close()
 
-        for asset in ("", "app.js", "style.css", "favicon.svg"):
+        for asset in ("", "app.js", "format.js", "style.css", "favicon.svg"):
             status, data, headers = get(asset)
             check(status == 200 and data, "packaged viewer asset missing")
             check(

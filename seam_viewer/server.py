@@ -18,6 +18,7 @@ from seam_viewer.evidence import (
 ASSETS = {
     "": ("index.html", "text/html"),
     "app.js": ("app.js", "text/javascript"),
+    "format.js": ("format.js", "text/javascript"),
     "style.css": ("style.css", "text/css"),
     "favicon.svg": ("favicon.svg", "image/svg+xml"),
 }

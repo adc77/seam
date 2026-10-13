@@ -19,6 +19,18 @@ class EvidenceError(ValueError):
     """Evidence is missing, changed, unsupported, or beyond the viewer's bounded read budget."""
 
 
+def error_hint(code):
+    hints = {
+        "viewer_directory_missing": "Directory not found. Check your working directory or use an absolute path.",
+        "viewer_not_directory": "Select an experiment directory, not a file.",
+        "viewer_summary_missing": "No completed summary here. Select the experiment subdirectory of a finished run.",
+    }
+    return hints.get(
+        code,
+        "Evidence is invalid, changed, or unavailable. Keep the original evidence; do not bypass verification.",
+    )
+
+
 def pretty(value):
     return json.dumps(
         value, ensure_ascii=True, sort_keys=True, indent=2, allow_nan=False
@@ -89,7 +101,12 @@ class Experiment:
                 if isinstance(exc, (EvidenceError, ExperimentError))
                 else "viewer_evidence_unavailable"
             )
-            return {**base, "available": False, "error": code}
+            return {
+                **base,
+                "available": False,
+                "error": code,
+                "error_hint": error_hint(code),
+            }
         return {
             **base,
             "available": True,
@@ -235,6 +252,10 @@ def _project(artifact, populations, port_worlds):
                         "memory_before_json": pretty(request["memory"]),
                         "memory_after_json": pretty(resolved["memory"]),
                         "decision_json": pretty(record["decision"]),
+                        "resolution_json": pretty(resolved),
+                        "choices_json": pretty(request["choices"])
+                        if "choices" in request
+                        else None,
                         "delivery_json": pretty(record["delivery"]),
                         "request_json": pretty(request),
                         "rng_before": request["rng_before"],
@@ -301,6 +322,12 @@ def open_experiments(selections):
     for label, directory in selections:
         root = Path(directory).resolve()
         try:
+            if not root.exists():
+                raise EvidenceError("viewer_directory_missing")
+            if not root.is_dir():
+                raise EvidenceError("viewer_not_directory")
+            if not (root / "summary.json").exists():
+                raise EvidenceError("viewer_summary_missing")
             summary = read_experiment(root)
             manifest = loads(
                 _read(
@@ -323,10 +350,9 @@ def open_experiments(selections):
                     None,
                 )
             )
-        except ExperimentError as exc:
+        except (ExperimentError, EvidenceError) as exc:
             experiments.append(Experiment(label, root, None, None, None, str(exc)))
         except (
-            EvidenceError,
             OSError,
             ValueError,
             TypeError,

@@ -15,7 +15,7 @@ def selection(value):
     return label, directory
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Read-only, loopback-only Seam experiment viewer."
     )
@@ -26,13 +26,17 @@ def main():
         action="store_true",
         help="Verify selected experiment summaries without starting HTTP.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         if args.check:
-            catalog = [
-                item.overview(index)
-                for index, item in enumerate(open_experiments(args.experiment))
-            ]
+            experiments = open_experiments(args.experiment)
+            catalog = [item.overview(index) for index, item in enumerate(experiments)]
+            for experiment, item in zip(experiments, catalog):
+                if not item["available"]:
+                    print(
+                        f"{experiment.label}: {experiment.root}: {item['error']}\n{item['error_hint']}",
+                        file=sys.stderr,
+                    )
             print(dumps(transport({"experiments": catalog})))
             return 0 if all(item["available"] for item in catalog) else 1
         with ViewerServer(args.experiment, args.port) as server:
@@ -40,8 +44,11 @@ def main():
             server.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
         return 0
-    except (OSError, ValueError):
-        print("viewer_configuration", file=sys.stderr)
+    except (OSError, ValueError) as exc:
+        print(
+            f"viewer_configuration: {exc}. Check labels, selected directories, and the local port.",
+            file=sys.stderr,
+        )
         return 2
     return 0
 

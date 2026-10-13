@@ -93,6 +93,7 @@ class ViewerTests(unittest.TestCase):
         self.assertEqual(loads(first["memory_after_json"]), {"actions": 1})
         self.assertEqual(loads(first["request_json"])["seed"], INT64_MAX)
         self.assertIsNotNone(first["event_i"])
+        self.assertEqual(loads(first["resolution_json"]), loads(first["decision_json"]))
         event = next(
             row for row in view["artifact"]["timeline"] if row["i"] == first["event_i"]
         )
@@ -361,6 +362,11 @@ class ViewerTests(unittest.TestCase):
             self.assertEqual(
                 json.loads(process.stdout)["experiments"][0]["available"], code == 0
             )
+            if code:
+                self.assertIn("absolute path", process.stderr)
+                self.assertNotIn("Traceback", process.stderr)
+            else:
+                self.assertEqual(process.stderr, "")
         process = subprocess.run(
             [sys.executable, "-m", "seam_viewer", "--experiment", "invalid", "--check"],
             cwd=REPO,
@@ -370,11 +376,28 @@ class ViewerTests(unittest.TestCase):
         )
         self.assertEqual(process.returncode, 2)
 
+    def test_path_diagnostics_are_actionable_private_and_non_mutating(self):
+        selections = [
+            ("Missing", self.root / "not-here", "viewer_directory_missing"),
+            ("File", self.good / "summary.json", "viewer_not_directory"),
+            ("Parent", self.root, "viewer_summary_missing"),
+        ]
+        before = hashes(self.root)
+        for label, path, code in selections:
+            with self.subTest(label=label):
+                overview = open_experiments([(label, path)])[0].overview(0)
+                self.assertFalse(overview["available"])
+                self.assertEqual(overview["error"], code)
+                self.assertTrue(overview["error_hint"])
+                self.assertNotIn(str(self.root), json.dumps(overview))
+        self.assertEqual(hashes(self.root), before)
+
     def test_http_routes_headers_and_lossless_payload(self):
         with serving([("Counter", self.good)]) as server:
             for path, content_type in (
                 ("", "text/html"),
                 ("app.js", "text/javascript"),
+                ("format.js", "text/javascript"),
                 ("style.css", "text/css"),
                 ("favicon.svg", "image/svg+xml"),
                 ("api/experiments", "application/json"),
