@@ -103,3 +103,9 @@ The checkout proof in `seam/proof/checkout/` preserves the v1 golden digests. Th
 The shared-store proof in `seam/proof/shared_store/` routes separate write/read ports through one SQLite world and resumes pending timers in fresh processes. See [worlds and checkpoints](WORLDS.md) for the lifecycle contract and exact-resume limits.
 
 Seam 0.4 adds a shared, bounded capture envelope and product-owned replay packaging, validated by Glass and an independent reservation service. See [capture and replay](CAPTURE.md) for APIs, explicit equal-time ordering, and what exporters must still supply.
+## Goal-driven actors
+
+Optional [`seam.personas`](PERSONAS.md) adds versioned synthetic goals and constraints to
+product-approved actor profiles. A model chooses actions from those goals and the product
+contract; ordinary inference limits, ownership checks, journals, and offline replay remain
+unchanged. It is provider-neutral and does not claim calibrated human behavior.
