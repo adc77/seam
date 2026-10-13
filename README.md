@@ -5,6 +5,10 @@ adoption. Start with [Glass's end-to-end quickstart](https://github.com/adc77/gl
 an installed, free, explicitly scripted demo with paired scenarios, durable continuation,
 verified evidence, and offline replay. No model or GPU is required.
 
+To connect your own product, start with the [integration guide](ADOPTING.md) and
+[copyable starter](examples/starter/README.md): ordinary handlers, an isolated dependency,
+authorized personas, paired outcomes, and verified replay using the published SDK.
+
 The optional [reactive actor layer](ACTORS.md) adds offline personas, decision tapes, and checkpointable private memory. Existing product handlers remain the source of business behavior.
 
 The [external inference handoff](INFERENCE.md) adds durable provider-neutral decision barriers and offline replay. It does not bundle a model client or weaken ordinary checkpoint identity checks.

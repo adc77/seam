@@ -139,6 +139,35 @@ jobs:
           cd "$RUNNER_TEMP"
           env -u PYTHONPATH python -m seam.proof.inference_experiments --out "$RUNNER_TEMP/inference-experiment-proof" --installed
 
+      - name: Standalone copied-product starter with the published SDK
+        run: |
+          STARTER_WORK="$GITHUB_WORKSPACE/.starter-work"
+          mkdir "$STARTER_WORK"
+          cp -R examples/starter "$STARTER_WORK/my-product"
+          python -m venv "$STARTER_WORK/env"
+          "$STARTER_WORK/env/bin/python" -m pip install "$STARTER_WORK/my-product"
+          cd "$STARTER_WORK/my-product"
+          env -u PYTHONPATH "$STARTER_WORK/env/bin/python" -m unittest discover -s tests -t . -v
+          cd "$RUNNER_TEMP"
+          env -u PYTHONPATH "$STARTER_WORK/env/bin/python" - <<'PY'
+          from pathlib import Path
+          import seam, sim_starter
+          for module in (seam, sim_starter):
+              assert "site-packages" in Path(module.__file__).resolve().parts, module.__file__
+          PY
+          env -u PYTHONPATH "$STARTER_WORK/env/bin/starter-demo" --scripted --out "$RUNNER_TEMP/starter-demo"
+          env -u PYTHONPATH "$STARTER_WORK/env/bin/python" -m seam_viewer --experiment "Orders=$RUNNER_TEMP/starter-demo/experiment" --check
+          env -u PYTHONPATH "$STARTER_WORK/env/bin/python" -m seam.experiments --plan "$STARTER_WORK/my-product/scenario-empty.json" --out "$RUNNER_TEMP/starter-empty"
+          env -u PYTHONPATH "$STARTER_WORK/env/bin/python" - <<'PY'
+          from seam.experiments import read_experiment
+          summary = read_experiment("starter-empty")
+          assert summary["status"] == "passed", summary
+          for row in summary["runs"]:
+              expected = 2 if row["variant"] == "healthy" else 0
+              assert row["metrics"]["fulfilled"] == expected, row
+              assert row["metrics"]["rejected"] == 2 - expected, row
+          PY
+
   guard:
     name: guard closes on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

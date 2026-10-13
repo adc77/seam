@@ -1,0 +1,1 @@
+{"format":"seam-experiment","version":1,"adapter":"sim_starter.experiments","baseline":"healthy","seeds":[7,19],"variants":[{"name":"healthy","parameters":{"capacity":2,"lose_ack":false,"fulfill_ns":2000000000,"until_ns":8000000000}},{"name":"empty","parameters":{"capacity":0,"lose_ack":true,"fulfill_ns":2000000000,"until_ns":8000000000}}],"timeout_s":30}
