@@ -112,6 +112,14 @@ assert.equal(
   "Not observed / not set",
 );
 assert.equal(readableObservation('{"retested":false}')[0][1], "No");
+assert.equal(
+  readableObservation('{"reference":"sample_id_17"}')[0][1],
+  "sample_id_17",
+);
+assert.equal(
+  readableObservation('{"email":"user_name@example.invalid"}')[0][1],
+  "user_name@example.invalid",
+);
 assert.equal(readableObservation("[1,2]").length, 0);
 assert.equal(
   personaName({

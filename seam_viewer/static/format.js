@@ -98,7 +98,7 @@ function readableObservation(raw) {
           ? "Yes"
           : "No"
         : typeof field === "string"
-          ? field.replaceAll("_", " ")
+          ? field
           : typeof field === "number" && Number.isSafeInteger(field)
             ? String(field)
             : "Open technical details for the exact value",
