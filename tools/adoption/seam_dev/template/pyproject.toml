@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seam-product-starter"
+version = "0.1.0"
+description = "A copyable synthetic product integration for Seam's frozen developer v1."
+requires-python = ">=3.11"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = ["seam @ git+https://github.com/adc77/seam.git@ccee8cf07f19c673d607b825d624d50f0199533b"]
+
+[project.scripts]
+starter-demo = "sim_starter.demo:main"
+
+[tool.setuptools.packages.find]
+include = ["sim_starter*"]

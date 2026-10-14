@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seam-devtools"
+version = "0.1.0"
+description = "Explicit product scaffolding and preflight for Seam's frozen developer SDK."
+requires-python = ">=3.11"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = ["seam @ git+https://github.com/adc77/seam.git@ccee8cf07f19c673d607b825d624d50f0199533b"]
+
+[project.scripts]
+seam-dev = "seam_dev.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["seam_dev"]
+namespaces = false
+
+[tool.setuptools.package-data]
+seam_dev = ["template/*", "template/.gitignore", "template/sim_starter/*.py", "template/tests/*.py"]

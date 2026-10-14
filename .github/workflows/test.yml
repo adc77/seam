@@ -168,6 +168,11 @@ jobs:
               assert row["metrics"]["rejected"] == 2 - expected, row
           PY
 
+      - name: Developer companion and generated-product installed proofs
+        run: |
+          cd tools/adoption
+          python -m unittest discover -s tests -t . -v
+
   guard:
     name: guard closes on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

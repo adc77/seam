@@ -5,6 +5,10 @@ package with a pinned published SDK dependency. No SDK changes, organization cod
 accounts, or model calls are required. Glass is a fuller lab example; the starter deliberately
 keeps the integration small enough to trace from a buyer decision to a product outcome.
 
+For a renamed starter with preflight and one command family, use the separate
+[developer companion](tools/adoption/README.md). Its initial contract covers generated
+order fixtures, not every product adapter; the integration responsibilities below remain yours.
+
 This is the frozen developer-v1 integration path, not automatic simulation of arbitrary
 unmodified software. You supply the business boundaries and sanitized inputs. Seam supplies
 the clock/RNG boundary, isolated dependency execution, actors, evidence, and strict replay.
