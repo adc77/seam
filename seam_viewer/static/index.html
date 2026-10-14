@@ -7,7 +7,7 @@
       name="description"
       content="Private, read-only inspection of verified Seam simulation evidence."
     />
-    <title>Seam · Simulation evidence</title>
+    <title>Seam / Evidence console</title>
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="style.css" />
     <script src="format.js" defer></script>
@@ -17,8 +17,11 @@
     <a class="skip-link" href="#content">Skip to evidence</a>
     <aside class="sidebar" aria-label="Experiment navigation">
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true">s</span>
-        <div>seam<span>SIMULATION INSPECTOR</span></div>
+        <span class="brand-mark" aria-hidden="true">S</span>
+        <div>Seam<span>EVIDENCE CONSOLE</span></div>
+      </div>
+      <div class="workspace-name">
+        Selected evidence<small>Private local workspace</small>
       </div>
       <div class="sidebar-heading">EXPERIMENTS</div>
       <nav id="experiments" aria-label="Selected experiments"></nav>
@@ -32,18 +35,63 @@
         </p>
       </div>
     </aside>
+    <div class="topbar">
+      <div>
+        Workspace <span>/</span> Seam <span>/</span>
+        <strong>Simulation evidence</strong>
+      </div>
+      <span class="readonly-label">READ-ONLY SESSION</span>
+    </div>
     <main id="content">
       <header class="page-header">
         <div>
-          <div class="eyebrow">OBSERVE / UNDERSTAND / COMPARE</div>
+          <div class="eyebrow">SEAM / VERIFIED ARTIFACTS</div>
           <h1>Simulation evidence</h1>
-          <p>Follow the decisions. Inspect the actual product outcomes.</p>
+          <p>
+            Compare recorded runs. Trace decisions back to actual product
+            outcomes.
+          </p>
         </div>
-        <span class="pill neutral">PRIVATE LOCAL SESSION</span>
+        <span id="evidence-health" class="pill neutral"
+          >VERIFYING EVIDENCE</span
+        >
       </header>
       <div id="notice" role="status" aria-live="polite"></div>
-      <section id="overview" aria-label="Experiment overview"></section>
-      <section id="run-section" class="panel" aria-label="Run inspector" hidden>
+      <div class="workspace-tabs" role="tablist" aria-label="Workspace views">
+        <button
+          id="view-overview"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="overview"
+        >
+          Overview &amp; runs
+        </button>
+        <button
+          id="view-inspector"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="run-section"
+          tabindex="-1"
+        >
+          Run inspector
+        </button>
+      </div>
+      <section
+        id="overview"
+        aria-label="Experiment overview"
+        role="tabpanel"
+        aria-labelledby="view-overview"
+      ></section>
+      <section
+        id="run-section"
+        class="panel"
+        aria-label="Run inspector"
+        role="tabpanel"
+        aria-labelledby="view-inspector"
+        hidden
+      >
         <div class="panel-heading">
           <div>
             <div class="eyebrow">RUN INSPECTOR</div>

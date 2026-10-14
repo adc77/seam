@@ -34,12 +34,26 @@ function metricLabel(key) {
 }
 
 function metricKeys(units) {
-  const priority = (key) => ["count", "ns"].includes(units[key]) ? 1 : 0;
-  return Object.keys(units).sort((a, b) => priority(a) - priority(b) || a.localeCompare(b));
+  const priority = (key) => (["count", "ns"].includes(units[key]) ? 1 : 0);
+  return Object.keys(units).sort(
+    (a, b) => priority(a) - priority(b) || a.localeCompare(b),
+  );
 }
 
 function controllerDescription(provider) {
   if (provider === "scripted") return "Scripted controller — not an LLM";
   if (provider === "fake") return "Fake controller — not an LLM";
   return "External decision provider";
+}
+
+function headlineMetricKeys(units) {
+  const preferred = [
+    "preferred_outcome_achieved",
+    "disposition_completed",
+    "unfinished_actors",
+  ].filter((key) => Object.hasOwn(units, key));
+  return [
+    ...preferred,
+    ...metricKeys(units).filter((key) => !preferred.includes(key)),
+  ].slice(0, 3);
 }

@@ -7,6 +7,7 @@ const model = {
   run: null,
   runIndex: 0,
   tab: "personas",
+  workspace: "overview",
   request: 0,
 };
 const pageSize = 50;
@@ -86,6 +87,8 @@ function fieldRow(body, values) {
 async function refresh() {
   const generation = ++model.request;
   notice("Verifying selected evidence…");
+  byId("evidence-health").textContent = "VERIFYING EVIDENCE";
+  byId("evidence-health").className = "pill neutral";
   try {
     const response = await api("experiments");
     if (generation !== model.request) return;
@@ -101,6 +104,8 @@ async function refresh() {
     model.run = null;
     byId("run-section").hidden = true;
     clear(byId("overview"));
+    byId("evidence-health").textContent = "EVIDENCE UNAVAILABLE";
+    byId("evidence-health").className = "pill failed";
     notice(`Evidence unavailable: ${error.message}`, true);
   }
 }
@@ -140,14 +145,30 @@ function selectExperiment(experiment) {
   model.experiment = experiment;
   model.run = null;
   model.runIndex = 0;
+  if (!experiment) {
+    clear(byId("experiments"));
+    clear(byId("overview"));
+    byId("run-section").hidden = true;
+    notice("No selected experiment evidence is available.", true);
+    byId("evidence-health").textContent = "NO EVIDENCE";
+    byId("evidence-health").className = "pill neutral";
+    return;
+  }
   navigation();
   clear(byId("overview"));
   byId("run-section").hidden = true;
   if (!experiment.available) {
-    notice(`Cannot inspect ${experiment.label}: ${experiment.error}. ${experiment.error_hint}`, true);
+    byId("evidence-health").textContent = "EVIDENCE UNAVAILABLE";
+    byId("evidence-health").className = "pill failed";
+    notice(
+      `Cannot inspect ${experiment.label}: ${experiment.error}. ${experiment.error_hint}`,
+      true,
+    );
     return;
   }
   notice("");
+  byId("evidence-health").textContent = "SUMMARY VERIFIED";
+  byId("evidence-health").className = "pill passed";
   renderOverview(experiment);
   const select = byId("run-select");
   clear(select);
@@ -159,7 +180,11 @@ function selectExperiment(experiment) {
     option.value = String(index);
     select.append(option);
   });
-  byId("run-section").hidden = false;
+  activateWorkspace(model.workspace);
+  if (!experiment.runs.length) {
+    byId("run-status").textContent = "No runs recorded in this experiment.";
+    return;
+  }
   selectRun(0);
 }
 
@@ -168,10 +193,13 @@ function renderOverview(experiment) {
   const heading = node("div", undefined, "panel-heading");
   const title = node("div");
   title.append(
-    node("div", "PAIRED SCENARIO COMPARISON", "eyebrow"),
+    node("div", "SELECTED EXPERIMENT", "eyebrow"),
     node("h2", experiment.label),
   );
-  heading.append(title, pill(experiment.status, `Engine checks ${experiment.status}`));
+  heading.append(
+    title,
+    pill(experiment.status, `Engine checks ${experiment.status}`),
+  );
   panel.append(heading);
   const counts = node("div", undefined, "summary-grid");
   const passed = experiment.runs.filter(
@@ -188,6 +216,7 @@ function renderOverview(experiment) {
     counts.append(card);
   });
   panel.append(counts);
+  renderRunList(panel, experiment);
   if (experiment.inference) {
     const usage = experiment.inference;
     panel.append(
@@ -221,7 +250,8 @@ function renderOverview(experiment) {
       "comparison-intro",
     ),
   );
-  panel.append(node("h3", "Product-defined outcomes and run metrics"));
+  const metrics = node("details");
+  metrics.append(node("summary", "Scenario outcome metrics · variant means"));
   const variants = experiment.plan.variants.map((variant) => variant.name);
   const keys = metricKeys(experiment.units);
   const totals = table(["Metric / mean", ...variants]);
@@ -229,12 +259,26 @@ function renderOverview(experiment) {
     const unit = experiment.units[key];
     const row = fieldRow(totals.body, [
       `${metricLabel(key)} (${unit === "ns" ? "seconds" : unit})`,
-      ...variants.map((name) => metricValue(experiment.aggregates[name].metrics[key].mean, unit)),
+      ...variants.map((name) =>
+        metricValue(experiment.aggregates[name].metrics[key].mean, unit),
+      ),
     ]);
-    row.title = JSON.stringify(Object.fromEntries(variants.map((name) => [name, experiment.aggregates[name].metrics[key].mean])));
+    row.title = JSON.stringify(
+      Object.fromEntries(
+        variants.map((name) => [
+          name,
+          experiment.aggregates[name].metrics[key].mean,
+        ]),
+      ),
+    );
   });
-  panel.append(totals.wrap);
-  disclosure(panel, "Exact aggregate statistics (original units)", JSON.stringify(experiment.aggregates, null, 2));
+  metrics.append(totals.wrap);
+  disclosure(
+    metrics,
+    "Exact aggregate statistics (original units)",
+    JSON.stringify(experiment.aggregates, null, 2),
+  );
+  panel.append(metrics);
   Object.entries(experiment.comparisons).forEach(([name, comparison]) => {
     const label = node("div", undefined, "comparison-heading");
     label.append(
@@ -248,6 +292,10 @@ function renderOverview(experiment) {
         `Included seeds: ${comparison.paired_seeds.join(", ") || "none"} · Excluded seeds: ${comparison.excluded_seeds.join(", ") || "none"}`,
         "comparison-intro",
       ),
+    );
+    const details = node("details");
+    details.append(
+      node("summary", "Paired metric differences · variant minus baseline"),
     );
     const deltas = table([
       "Metric",
@@ -267,10 +315,17 @@ function renderOverview(experiment) {
         stats.count,
       ]);
       row.title = JSON.stringify(stats);
-      row.firstChild.append(node("span", unit === "ns" ? "seconds" : unit, "metric-unit"));
+      row.firstChild.append(
+        node("span", unit === "ns" ? "seconds" : unit, "metric-unit"),
+      );
     });
-    panel.append(deltas.wrap);
-    disclosure(panel, "Exact difference statistics (original units)", JSON.stringify(comparison.delta, null, 2));
+    details.append(deltas.wrap);
+    disclosure(
+      details,
+      "Exact difference statistics (original units)",
+      JSON.stringify(comparison.delta, null, 2),
+    );
+    panel.append(details);
     disclosure(
       panel,
       "Per-seed paired differences",
@@ -290,6 +345,87 @@ function renderOverview(experiment) {
   byId("overview").append(panel);
 }
 
+function renderRunList(parent, experiment) {
+  parent.append(node("h3", "Recorded runs"));
+  const filters = node("div", undefined, "run-filters");
+  const searchLabel = node("label", "Search variant or seed");
+  const search = node("input");
+  search.type = "search";
+  search.id = "run-search";
+  search.placeholder = "Filter recorded runs…";
+  searchLabel.append(search);
+  const statusLabel = node("label", "Engine status");
+  const status = node("select");
+  status.id = "run-filter";
+  ["all", "passed", "failed"].forEach((value) => {
+    const option = node("option", value === "all" ? "All statuses" : value);
+    option.value = value;
+    status.append(option);
+  });
+  statusLabel.append(status);
+  filters.append(searchLabel, statusLabel);
+  parent.append(filters);
+  const keys = headlineMetricKeys(experiment.units);
+  const runs = table([
+    "Variant / seed",
+    "Engine checks",
+    ...keys.map(metricLabel),
+    "Inspect",
+  ]);
+  parent.append(runs.wrap);
+  const count = node("p", "", "comparison-intro");
+  parent.append(count);
+  function draw() {
+    clear(runs.body);
+    let visible = 0;
+    experiment.runs.forEach((row, index) => {
+      if (
+        !`${row.variant} ${row.seed}`
+          .toLowerCase()
+          .includes(search.value.trim().toLowerCase()) ||
+        (status.value !== "all" && row.status !== status.value)
+      )
+        return;
+      visible += 1;
+      const item = node("tr");
+      item.dataset.runIndex = String(index);
+      item.append(node("td", `${row.variant} / ${row.seed}`, "numeric"));
+      const check = node("td");
+      check.append(pill(row.status, row.status));
+      item.append(check);
+      keys.forEach((key) =>
+        item.append(
+          node(
+            "td",
+            metricValue(row.metrics?.[key], experiment.units[key]),
+            "numeric",
+          ),
+        ),
+      );
+      const control = node("td");
+      const inspect = button(
+        "Inspect",
+        () => {
+          activateWorkspace("inspector");
+          selectRun(index);
+        },
+        "event-button",
+      );
+      inspect.setAttribute(
+        "aria-label",
+        `Inspect ${row.variant} seed ${row.seed}`,
+      );
+      control.append(inspect);
+      item.append(control);
+      runs.body.append(item);
+    });
+    count.textContent = `${visible} of ${experiment.runs.length} recorded runs. Engine checks and product outcomes are separate verdicts.`;
+  }
+  search.addEventListener("input", draw);
+  status.addEventListener("change", draw);
+  draw();
+}
+
 async function selectRun(index) {
   const generation = ++model.request;
   model.runIndex = index;
@@ -303,10 +439,14 @@ async function selectRun(index) {
     const run = await api(`experiments/${model.experiment.id}/runs/${index}`);
     if (generation !== model.request) return;
     model.run = run;
+    byId("evidence-health").textContent = "RUN VERIFIED";
+    byId("evidence-health").className = "pill passed";
     renderRun(run);
     activateTab(model.tab);
   } catch (error) {
     if (generation !== model.request) return;
+    byId("evidence-health").textContent = "RUN UNAVAILABLE";
+    byId("evidence-health").className = "pill failed";
     notice(
       `Cannot verify this run: ${error.message}. Recheck evidence before relying on the displayed comparison.`,
       true,
@@ -348,7 +488,9 @@ function renderRun(run) {
   }
   byId("run-status").append(status);
   if (row.metrics) {
-    byId("run-status").append(node("h3", "Product-defined outcomes and run metrics"));
+    byId("run-status").append(
+      node("h3", "Product-defined outcomes and run metrics"),
+    );
     const outcomes = table(["Metric", "Observed value"]);
     metricKeys(model.experiment.units).forEach((key) => {
       const unit = model.experiment.units[key];
@@ -358,7 +500,9 @@ function renderRun(run) {
       ]);
       item.title = `${key}: ${row.metrics[key]} ${unit}`;
     });
-    byId("run-status").append(outcomes.wrap);
+    const metrics = node("details");
+    metrics.append(node("summary", "All observed run metrics"), outcomes.wrap);
+    byId("run-status").append(metrics);
   }
   if (run.inference_json)
     disclosure(
@@ -430,7 +574,10 @@ function renderPersonas(actors) {
     const header = node("div", undefined, "actor-header");
     header.append(
       node("h2", actor.id),
-      pill("neutral", actor.next_ns === null ? "Decisions finished" : "Decision pending"),
+      pill(
+        "neutral",
+        actor.next_ns === null ? "Decisions finished" : "Decision pending",
+      ),
     );
     inspector.append(header);
     inspector.append(
@@ -446,12 +593,16 @@ function renderPersonas(actors) {
         "comparison-intro",
       ),
     );
-    const profile = node("div", undefined, "evidence-grid");
-    jsonBlock(profile, "Profile / behavioral assumptions", actor.profile_json);
-    jsonBlock(profile, "Authorized actions", actor.actions_json);
-    inspector.append(profile);
-    disclosure(inspector, "Initial private memory", actor.initial_memory_json);
-    disclosure(inspector, "Current private memory", actor.current_memory_json);
+    const context = node("div", undefined, "evidence-grid");
+    disclosure(
+      context,
+      "Persona profile / behavioral assumptions",
+      actor.profile_json,
+    );
+    disclosure(context, "Authorized actions", actor.actions_json);
+    disclosure(context, "Initial private memory", actor.initial_memory_json);
+    disclosure(context, "Current private memory", actor.current_memory_json);
+    inspector.append(context);
     if (!actor.decisions.length) {
       inspector.append(
         node(
@@ -493,6 +644,7 @@ function renderPersonas(actors) {
           "comparison-intro",
         ),
       );
+      jsonBlock(detail, "Accepted selection", decision.decision_json);
       jsonBlock(
         detail,
         "What this persona observed",
@@ -502,14 +654,17 @@ function renderPersonas(actors) {
       jsonBlock(memory, "Memory before", decision.memory_before_json);
       jsonBlock(memory, "Memory after", decision.memory_after_json);
       detail.append(memory);
+      if (decision.choices_json)
+        disclosure(
+          detail,
+          "Product-authorized choices offered",
+          decision.choices_json,
+        );
       jsonBlock(
         detail,
-        "Accepted selection",
-        decision.decision_json,
+        "Resolved action / memory / next wake",
+        decision.resolution_json,
       );
-      if (decision.choices_json)
-        disclosure(detail, "Product-authorized choices offered", decision.choices_json);
-      jsonBlock(detail, "Resolved action / memory / next wake", decision.resolution_json);
       jsonBlock(detail, "Translated product delivery", decision.delivery_json);
       disclosure(detail, "Exact policy request", decision.request_json);
       if (decision.event_i !== null)
@@ -652,6 +807,36 @@ function activateTab(tab) {
     const control = byId(`tab-${id}`);
     control.setAttribute("aria-selected", String(selected));
     control.tabIndex = selected ? 0 : -1;
+  });
+}
+function activateWorkspace(view) {
+  const changed = model.workspace !== view;
+  model.workspace = view;
+  byId("overview").hidden = view !== "overview";
+  byId("run-section").hidden =
+    view !== "inspector" || !model.experiment?.available;
+  for (const name of ["overview", "inspector"]) {
+    byId("view-" + name).setAttribute("aria-selected", String(view === name));
+    byId("view-" + name).tabIndex = view === name ? 0 : -1;
+  }
+  if (changed) window.scrollTo(0, 0);
+}
+for (const name of ["overview", "inspector"]) {
+  byId("view-" + name).addEventListener("click", () => activateWorkspace(name));
+  byId("view-" + name).addEventListener("keydown", (event) => {
+    if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const target =
+        event.key === "Home"
+          ? "overview"
+          : event.key === "End"
+            ? "inspector"
+            : name === "overview"
+              ? "inspector"
+              : "overview";
+      activateWorkspace(target);
+      byId("view-" + target).focus();
+    }
   });
 }
 ["personas", "timeline", "state"].forEach((tab, index, tabs) => {

@@ -1,5 +1,12 @@
 # Build log
 
+## 2026-10-14 — evidence console redesign
+
+- Reworked the optional read-only viewer into a compact console with separate overview/run inspection, searchable recorded runs, engine-status filtering, and keyboard-operated workspace tabs.
+- Headline columns show declared preferred outcomes independently from completed dispositions and engine checks; generic products still use their own metric names and units.
+- Kept integrity checks, exact integer/rational formatting, private evidence boundaries, and all runtime Python code unchanged. No authentication or public deployment is claimed.
+- Glass's installed browser proof exercises this viewer with four actual paired runs, persona decisions, timeline filters, failure state, desktop/mobile screenshots, and unchanged experiment file hashes. No model calls.
+
 Local implementation of PLAN.md. Heavy work is skipped and written down here. Nothing in v1 was heavy enough to skip.
 
 ## 2026-10-01

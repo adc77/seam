@@ -19,6 +19,18 @@ The companion lives outside the `seam` runtime package. Adding it does not chang
 
 ## What you can inspect
 
+The evidence console separates **Overview & runs** from **Run inspector**. Search by
+variant or exact seed, filter engine status, then inspect a recorded run. Headline
+columns prioritize declared preferred outcomes, completed dispositions, and unfinished
+actors when present; all declared metrics remain available in disclosures. Failed cells
+retain unavailable values rather than invented zeros. Run/summary verification badges
+describe evidence integrity, not business success.
+
+The inspector separates personas, timeline, and state/failures. Keyboard arrow keys,
+Home, and End move between tabs. Profile, authority, memory, exact aggregates, and
+provenance remain accessible without displacing the primary decision and run views.
+The same compact console layout adapts to narrow screens without external assets.
+
 - Experiment selection, declared variants/parameters, paired seeds, baseline, and pinned source/interpreter/environment identity.
 - Successful/failed run counts, declared metric units, exact rational means, per-seed differences, and excluded pairs. Partial comparisons remain labeled incomplete; failed runs never become zero-valued outcomes.
 - Individual personas: policy mode, profile assumptions, allowed actions, initial/current private memory, arrivals, pending wakeups, and recorded decision requests.

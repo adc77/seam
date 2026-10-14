@@ -5,23 +5,77 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const path = require("node:path");
 const context = vm.createContext({});
-vm.runInContext(fs.readFileSync(path.join(__dirname, "../seam_viewer/static/format.js"), "utf8"), context);
-const { metricValue, metricLabel, controllerDescription, decimal, metricKeys } = context;
+vm.runInContext(
+  fs.readFileSync(
+    path.join(__dirname, "../seam_viewer/static/format.js"),
+    "utf8",
+  ),
+  context,
+);
+const {
+  metricValue,
+  metricLabel,
+  controllerDescription,
+  decimal,
+  metricKeys,
+  headlineMetricKeys,
+} = context;
 assert.equal(metricValue("4000000000", "ns"), "4 s");
 assert.equal(metricValue("1000000001", "ns"), "1.000000001 s");
-assert.equal(metricValue("9223372036854775807", "ns"), "9223372036.854775807 s");
-assert.equal(metricValue("18446744073709551614", "count"), "18446744073709551614");
-assert.equal(metricValue({ numerator: "34", denominator: "2" }, "samples"), "17");
-assert.equal(metricValue({ numerator: "1", denominator: "3" }, "samples"), "≈ 0.333");
+assert.equal(
+  metricValue("9223372036854775807", "ns"),
+  "9223372036.854775807 s",
+);
+assert.equal(
+  metricValue("18446744073709551614", "count"),
+  "18446744073709551614",
+);
+assert.equal(
+  metricValue({ numerator: "34", denominator: "2" }, "samples"),
+  "17",
+);
+assert.equal(
+  metricValue({ numerator: "1", denominator: "3" }, "samples"),
+  "≈ 0.333",
+);
 assert.equal(metricValue({ numerator: "1", denominator: "3" }, "ns"), "≈ 0 s");
 assert.equal(metricValue("-13000000000", "ns"), "−13 s");
 assert.equal(metricValue(null, "samples"), "—");
 assert.equal(metricValue(undefined, "samples"), "—");
 assert.throws(() => decimal("1", "0", 3));
 assert.equal(metricLabel("stop_at_ns"), "Stop at");
-assert.equal(metricLabel("preferred_outcome_achieved"), "Preferred outcome achieved");
-assert.equal(controllerDescription("scripted"), "Scripted controller — not an LLM");
+assert.equal(
+  metricLabel("preferred_outcome_achieved"),
+  "Preferred outcome achieved",
+);
+assert.equal(
+  controllerDescription("scripted"),
+  "Scripted controller — not an LLM",
+);
 assert.equal(controllerDescription("fake"), "Fake controller — not an LLM");
 assert.equal(controllerDescription("unknown"), "External decision provider");
-assert.equal(Array.from(metricKeys({ calls: "count", stop_at_ns: "ns", resolved: "tickets" })).join(","), "resolved,calls,stop_at_ns");
+assert.equal(
+  Array.from(
+    metricKeys({ calls: "count", stop_at_ns: "ns", resolved: "tickets" }),
+  ).join(","),
+  "resolved,calls,stop_at_ns",
+);
+assert.equal(
+  Array.from(
+    headlineMetricKeys({
+      calls: "count",
+      preferred_outcome_achieved: "samples",
+      disposition_completed: "samples",
+      unfinished_actors: "actors",
+    }),
+  ).join(","),
+  "preferred_outcome_achieved,disposition_completed,unfinished_actors",
+);
+assert.equal(
+  Array.from(headlineMetricKeys({ calls: "count", resolved: "tickets" })).join(
+    ",",
+  ),
+  "resolved,calls",
+);
+assert.equal(Array.from(headlineMetricKeys({})).length, 0);
 console.log("Viewer formatting assertions passed");
