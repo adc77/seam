@@ -19,6 +19,10 @@ const {
   decimal,
   metricKeys,
   headlineMetricKeys,
+  friendlyMetricLabel,
+  recordedChoice,
+  readableObservation,
+  personaName,
 } = context;
 assert.equal(metricValue("4000000000", "ns"), "4 s");
 assert.equal(metricValue("1000000001", "ns"), "1.000000001 s");
@@ -78,4 +82,46 @@ assert.equal(
   "resolved,calls",
 );
 assert.equal(Array.from(headlineMetricKeys({})).length, 0);
+assert.equal(friendlyMetricLabel("preferred_outcome_achieved"), "Goals met");
+assert.equal(
+  friendlyMetricLabel("custom_product_metric"),
+  "Custom product metric",
+);
+assert.equal(
+  recordedChoice({
+    decision_json: '{"choice":"submit"}',
+    choices_json: '[{"id":"submit","description":"Submit my sample."}]',
+  }),
+  "Submit my sample.",
+);
+assert.equal(
+  recordedChoice({ decision_json: '{"choice":"unknown"}', choices_json: "[]" }),
+  "Recorded choice: unknown",
+);
+assert.equal(
+  recordedChoice({ decision_json: '{"action":{"value":9223372036854775807}}' }),
+  "Recorded action · open technical details for the exact decision",
+);
+assert.equal(
+  readableObservation('{"value":9223372036854775807}')[0][1],
+  "Open technical details for the exact value",
+);
+assert.equal(readableObservation('{"value":89}')[0][1], "89");
+assert.equal(
+  readableObservation('{"status":null}')[0][1],
+  "Not observed / not set",
+);
+assert.equal(readableObservation('{"retested":false}')[0][1], "No");
+assert.equal(readableObservation("[1,2]").length, 0);
+assert.equal(
+  personaName({
+    id: "fallback_id",
+    profile_json: '{"persona":{"name":"Responsive submitter"}}',
+  }),
+  "Responsive submitter",
+);
+assert.equal(
+  personaName({ id: "original_id", profile_json: "{}" }),
+  "original_id",
+);
 console.log("Viewer formatting assertions passed");

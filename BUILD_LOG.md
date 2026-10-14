@@ -1,5 +1,14 @@
 # Build log
 
+## 2026-10-15 — dark, result-first console
+
+- Made the viewer dark by default with readable controls/status colors and no external theme assets.
+- Added a plain-language start-here guide and scenario outcome cards. Run checks remain explicitly separate from goal achievement; exact mean values and declared units are preserved.
+- Replaced primary seed/variant terminology with scenario/repeat labels while retaining original IDs. Technical provider usage/statistics/source identity stay in the advanced report.
+- Persona views show recorded names, goals, choice descriptions, and readable observation fields. Exact JSON remains in collapsed technical details; unsafe wide integers are never rounded into displayed evidence.
+- Added formatting assertions for legacy choices, unknown metrics, absent persona names, booleans/nulls, and wide integers. Glass's installed browser proof checks the dark theme, contrast, result summaries, exact recorded choices, keyboard access, mobile layout, and immutable evidence.
+- Runtime Python and all execution/capture boundaries remain unchanged. No public hosting, live-model certification, or production authentication is implied.
+
 ## 2026-10-14 — evidence console redesign
 
 - Reworked the optional read-only viewer into a compact console with separate overview/run inspection, searchable recorded runs, engine-status filtering, and keyboard-operated workspace tabs.

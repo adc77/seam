@@ -57,3 +57,55 @@ function headlineMetricKeys(units) {
     ...metricKeys(units).filter((key) => !preferred.includes(key)),
   ].slice(0, 3);
 }
+
+function friendlyMetricLabel(key) {
+  const labels = {
+    preferred_outcome_achieved: "Goals met",
+    disposition_completed: "Final outcomes reached",
+    unfinished_actors: "Personas still waiting",
+    released: "Samples released",
+    scrapped: "Samples rejected",
+    filed_reports: "Reports saved",
+    completion_time_ns: "Time to final result",
+  };
+  return Object.hasOwn(labels, key) ? labels[key] : metricLabel(key);
+}
+
+function recordedChoice(decision) {
+  const value = JSON.parse(decision.decision_json);
+  if (typeof value.choice !== "string")
+    return "Recorded action · open technical details for the exact decision";
+  if (decision.choices_json) {
+    const choice = JSON.parse(decision.choices_json).find(
+      (row) => row.id === value.choice,
+    );
+    if (choice && typeof choice.description === "string")
+      return choice.description;
+  }
+  return "Recorded choice: " + value.choice;
+}
+
+function readableObservation(raw) {
+  const value = JSON.parse(raw);
+  if (value === null || Array.isArray(value) || typeof value !== "object")
+    return [];
+  return Object.entries(value).map(([key, field]) => [
+    metricLabel(key),
+    field === null
+      ? "Not observed / not set"
+      : typeof field === "boolean"
+        ? field
+          ? "Yes"
+          : "No"
+        : typeof field === "string"
+          ? field.replaceAll("_", " ")
+          : typeof field === "number" && Number.isSafeInteger(field)
+            ? String(field)
+            : "Open technical details for the exact value",
+  ]);
+}
+
+function personaName(actor) {
+  const name = JSON.parse(actor.profile_json).persona?.name;
+  return typeof name === "string" ? name : actor.id;
+}

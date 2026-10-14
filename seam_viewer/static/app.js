@@ -61,6 +61,9 @@ async function api(route) {
 }
 function table(headers) {
   const wrap = node("div", undefined, "table-wrap");
+  wrap.tabIndex = 0;
+  wrap.setAttribute("role", "region");
+  wrap.setAttribute("aria-label", "Scrollable evidence table");
   const element = node("table");
   const head = node("thead");
   const row = node("tr");
@@ -175,7 +178,7 @@ function selectExperiment(experiment) {
   experiment.runs.forEach((row, index) => {
     const option = node(
       "option",
-      `${row.variant} · seed ${row.seed} · engine checks ${row.status}`,
+      `${row.variant} · repeat ${row.seed} · run checks ${row.status}`,
     );
     option.value = String(index);
     select.append(option);
@@ -198,7 +201,7 @@ function renderOverview(experiment) {
   );
   heading.append(
     title,
-    pill(experiment.status, `Engine checks ${experiment.status}`),
+    pill(experiment.status, `Run checks ${experiment.status}`),
   );
   panel.append(heading);
   const counts = node("div", undefined, "summary-grid");
@@ -206,20 +209,37 @@ function renderOverview(experiment) {
     (row) => row.status === "passed",
   ).length;
   [
-    [experiment.plan.variants.length, "Variants"],
-    [experiment.plan.seeds.length, "Paired seeds"],
-    [passed, "Engine checks passed"],
-    [experiment.runs.length - passed, "Engine checks failed"],
+    [experiment.plan.variants.length, "Scenarios"],
+    [experiment.plan.seeds.length, "Input repeats"],
+    [passed, "Run checks passed"],
+    [experiment.runs.length - passed, "Run checks failed"],
   ].forEach(([value, label]) => {
     const card = node("div", undefined, "summary-card");
     card.append(node("strong", value), node("span", label));
     counts.append(card);
   });
-  panel.append(counts);
+  renderScenarioResults(panel, experiment);
+  panel.append(
+    node(
+      "p",
+      experiment.inference
+        ? controllerDescription(experiment.inference.provider)
+        : "Recorded policy decisions · this viewer makes no model calls",
+      "controller-label",
+    ),
+  );
   renderRunList(panel, experiment);
+  const advanced = node("details", undefined, "advanced-report");
+  advanced.append(
+    node(
+      "summary",
+      "Advanced report · provider usage, metrics, and reproducibility",
+    ),
+  );
+  advanced.append(counts);
   if (experiment.inference) {
     const usage = experiment.inference;
-    panel.append(
+    advanced.append(
       node("h3", controllerDescription(usage.provider)),
       node(
         "p",
@@ -242,7 +262,7 @@ function renderOverview(experiment) {
     node("span", `Baseline: ${experiment.plan.baseline}`),
     node("span", `Verified summary: ${experiment.summary_sha256.slice(0, 12)}`),
   );
-  panel.append(
+  advanced.append(
     metadata,
     node(
       "p",
@@ -278,15 +298,15 @@ function renderOverview(experiment) {
     "Exact aggregate statistics (original units)",
     JSON.stringify(experiment.aggregates, null, 2),
   );
-  panel.append(metrics);
+  advanced.append(metrics);
   Object.entries(experiment.comparisons).forEach(([name, comparison]) => {
     const label = node("div", undefined, "comparison-heading");
     label.append(
       node("h3", `${name} versus ${comparison.baseline}`),
       pill(comparison.status, `Pairing ${comparison.status}`),
     );
-    panel.append(label);
-    panel.append(
+    advanced.append(label);
+    advanced.append(
       node(
         "p",
         `Included seeds: ${comparison.paired_seeds.join(", ") || "none"} · Excluded seeds: ${comparison.excluded_seeds.join(", ") || "none"}`,
@@ -325,36 +345,102 @@ function renderOverview(experiment) {
       "Exact difference statistics (original units)",
       JSON.stringify(comparison.delta, null, 2),
     );
-    panel.append(details);
+    advanced.append(details);
     disclosure(
-      panel,
+      advanced,
       "Per-seed paired differences",
       experiment.pairs_json[name],
     );
   });
   disclosure(
-    panel,
+    advanced,
     "Declared scenario parameters and seeds",
     experiment.plan_json,
   );
   disclosure(
-    panel,
+    advanced,
     "Pinned source, SDK, interpreter, and environment identity",
     experiment.identity_json,
   );
+  panel.append(advanced);
   byId("overview").append(panel);
+}
+
+function renderScenarioResults(parent, experiment) {
+  const section = node("section", undefined, "scenario-results");
+  section.id = "scenario-results";
+  section.append(
+    node(
+      "h3",
+      Object.hasOwn(experiment.units, "preferred_outcome_achieved")
+        ? "Did the product achieve its goal?"
+        : "What did the product report?",
+    ),
+  );
+  section.append(
+    node(
+      "p",
+      "A passed run check means the recorded run passed its checks. It does not mean the product achieved its goal.",
+      "result-explanation",
+    ),
+  );
+  const grid = node("div", undefined, "scenario-grid");
+  const keys = headlineMetricKeys(experiment.units);
+  for (const variant of experiment.plan.variants) {
+    const card = node("article", undefined, "scenario-card");
+    card.append(node("h3", variant.name));
+    const stats = experiment.aggregates[variant.name];
+    card.append(
+      node(
+        "p",
+        `${stats.passed} checked runs · ${stats.failed} failed checks`,
+        "scenario-checks",
+      ),
+    );
+    for (const key of keys) {
+      const row = node("div", undefined, "result-metric");
+      const label = node("span", friendlyMetricLabel(key));
+      label.append(
+        node(
+          "small",
+          experiment.units[key] === "ns"
+            ? "seconds per run"
+            : `${experiment.units[key]} per run`,
+          "metric-unit",
+        ),
+      );
+      row.append(
+        label,
+        node(
+          "strong",
+          metricValue(stats.metrics[key].mean, experiment.units[key]),
+        ),
+      );
+      card.append(row);
+    }
+    card.append(
+      node(
+        "p",
+        "Values are averages across recorded runs. Missing outcomes are not counted as zero.",
+        "scenario-note",
+      ),
+    );
+    grid.append(card);
+  }
+  section.append(grid);
+  parent.append(section);
 }
 
 function renderRunList(parent, experiment) {
   parent.append(node("h3", "Recorded runs"));
   const filters = node("div", undefined, "run-filters");
-  const searchLabel = node("label", "Search variant or seed");
+  const searchLabel = node("label", "Search scenario or repeat ID");
   const search = node("input");
   search.type = "search";
   search.id = "run-search";
   search.placeholder = "Filter recorded runs…";
   searchLabel.append(search);
-  const statusLabel = node("label", "Engine status");
+  const statusLabel = node("label", "Run check status");
   const status = node("select");
   status.id = "run-filter";
   ["all", "passed", "failed"].forEach((value) => {
@@ -367,10 +453,10 @@ function renderRunList(parent, experiment) {
   parent.append(filters);
   const keys = headlineMetricKeys(experiment.units);
   const runs = table([
-    "Variant / seed",
-    "Engine checks",
-    ...keys.map(metricLabel),
-    "Inspect",
+    "Scenario / repeat ID",
+    "Run checks",
+    ...keys.map(friendlyMetricLabel),
+    "Explore",
   ]);
   parent.append(runs.wrap);
   const count = node("p", "", "comparison-intro");
@@ -404,7 +490,7 @@ function renderRunList(parent, experiment) {
       );
       const control = node("td");
       const inspect = button(
-        "Inspect",
+        "Explore run",
         () => {
           activateWorkspace("inspector");
           selectRun(index);
@@ -413,7 +499,7 @@ function renderRunList(parent, experiment) {
       );
       inspect.setAttribute(
         "aria-label",
-        `Inspect ${row.variant} seed ${row.seed}`,
+        `Explore ${row.variant} repeat ${row.seed}`,
       );
       control.append(inspect);
       item.append(control);
@@ -464,7 +550,7 @@ async function selectRun(index) {
 
 function renderRun(run) {
   const row = run.row;
-  byId("run-title").textContent = `${row.variant} · seed ${row.seed}`;
+  byId("run-title").textContent = `${row.variant} · repeat ${row.seed}`;
   clear(byId("run-status"));
   const status = node("div", undefined, "metadata");
   status.append(pill(row.status, `Engine checks ${row.status}`));
@@ -486,10 +572,31 @@ function renderRun(run) {
       ),
     );
   }
-  byId("run-status").append(status);
+  const provenance = node("details");
+  provenance.append(
+    node("summary", "Run checks and technical identity"),
+    status,
+  );
   if (row.metrics) {
+    const results = node("div", undefined, "run-result-strip");
+    for (const key of headlineMetricKeys(model.experiment.units)) {
+      const card = node("div");
+      card.append(
+        node("span", friendlyMetricLabel(key)),
+        node(
+          "strong",
+          metricValue(row.metrics[key], model.experiment.units[key]),
+        ),
+      );
+      results.append(card);
+    }
     byId("run-status").append(
-      node("h3", "Product-defined outcomes and run metrics"),
+      results,
+      node(
+        "p",
+        "These are the product's recorded outcomes. Checks passing and persona decisions ending do not establish goal success.",
+        "result-explanation",
+      ),
     );
     const outcomes = table(["Metric", "Observed value"]);
     metricKeys(model.experiment.units).forEach((key) => {
@@ -504,6 +611,7 @@ function renderRun(run) {
     metrics.append(node("summary", "All observed run metrics"), outcomes.wrap);
     byId("run-status").append(metrics);
   }
+  byId("run-status").append(provenance);
   if (run.inference_json)
     disclosure(
       byId("state"),
@@ -526,9 +634,17 @@ function renderRun(run) {
   renderPersonas(run.artifact.actors);
   renderTimeline(run.artifact.timeline);
   const state = byId("state");
-  jsonBlock(state, "Final product state", run.artifact.final_state_json);
-  jsonBlock(state, "Assertions", run.artifact.assertions_json);
-  jsonBlock(state, "Faults and grader failures", run.artifact.failure_json);
+  state.append(
+    node("h3", "Recorded result details"),
+    node(
+      "p",
+      "The outcome metrics above describe what the product reported. Open these exact records when you need to investigate a failure; they are technical evidence, not inferred explanations.",
+      "result-explanation",
+    ),
+  );
+  disclosure(state, "Final product state", run.artifact.final_state_json);
+  disclosure(state, "Recorded assertions", run.artifact.assertions_json);
+  disclosure(state, "Faults and grader failures", run.artifact.failure_json);
   disclosure(state, "Timer outcomes", run.artifact.timers_json);
   disclosure(state, "Artifact provenance", run.artifact.provenance_json);
   disclosure(
@@ -560,7 +676,7 @@ function renderPersonas(actors) {
   actors.forEach((actor, index) => {
     const control = button("", () => selectActor(index), "actor-button");
     control.append(
-      node("strong", actor.id),
+      node("strong", personaName(actor)),
       node("small", `${actor.world} · ${actor.step} decisions`),
     );
     list.append(control);
@@ -573,23 +689,30 @@ function renderPersonas(actors) {
     const actor = actors[index];
     const header = node("div", undefined, "actor-header");
     header.append(
-      node("h2", actor.id),
+      node("h2", personaName(actor)),
       pill(
         "neutral",
         actor.next_ns === null ? "Decisions finished" : "Decision pending",
       ),
     );
     inspector.append(header);
-    inspector.append(
-      node(
-        "p",
-        `${actor.policy} · ${actor.mode} policy · start ${ns(actor.start_ns)} · next wake ${ns(actor.next_ns)}`,
-      ),
+    const persona = JSON.parse(actor.profile_json).persona;
+    if (Array.isArray(persona?.goals)) {
+      const goals = node("div", undefined, "persona-goals");
+      goals.append(node("h3", "This persona's stated goals"));
+      for (const goal of persona.goals)
+        if (typeof goal === "string") goals.append(node("p", goal));
+      inspector.append(goals);
+    }
+    disclosure(
+      inspector,
+      "Persona timing and policy details",
+      `${actor.policy} · ${actor.mode} policy · start ${ns(actor.start_ns)} · next wake ${ns(actor.next_ns)}`,
     );
     inspector.append(
       node(
         "p",
-        `Actor world ${actor.sealed ? "sealed" : "not sealed"}. Sealing ends the observation window; it does not mean every persona completed its goal.`,
+        "The report window is closed when the actor world is sealed. Decisions ending does not mean the persona achieved its goal.",
         "comparison-intro",
       ),
     );
@@ -638,35 +761,62 @@ function renderPersonas(actors) {
       const decision = actor.decisions[decisionIndex];
       detail.append(
         node("h3", `Decision ${decision.step} · ${ns(decision.at_ns)}`),
+      );
+      const choice = node("div", undefined, "recorded-choice");
+      choice.append(
+        node("span", "Accepted selection", "eyebrow"),
+        node("p", recordedChoice(decision)),
+      );
+      detail.append(choice, node("h3", "What this persona observed"));
+      const observation = readableObservation(decision.observation_json);
+      if (observation.length) {
+        const fields = table(["Observed field", "Recorded value"]);
+        observation.forEach((values) => fieldRow(fields.body, values));
+        detail.append(fields.wrap);
+      } else
+        detail.append(
+          node(
+            "p",
+            "Structured observation recorded. Open technical details for its exact contents.",
+            "comparison-intro",
+          ),
+        );
+      const technical = node("details", undefined, "decision-technical");
+      technical.append(
+        node(
+          "summary",
+          "Technical details · exact observation, action, memory, and policy request",
+        ),
+      );
+      technical.append(
         node(
           "p",
-          `Actor RNG counter: ${decision.rng_before} → ${decision.rng_after}. Recorded evidence, not an inferred rationale.`,
+          `Actor RNG counter: ${decision.rng_before} → ${decision.rng_after}. No rationale is inferred from this counter.`,
           "comparison-intro",
         ),
       );
-      jsonBlock(detail, "Accepted selection", decision.decision_json);
-      jsonBlock(
-        detail,
-        "What this persona observed",
-        decision.observation_json,
-      );
-      const memory = node("div", undefined, "evidence-grid");
-      jsonBlock(memory, "Memory before", decision.memory_before_json);
-      jsonBlock(memory, "Memory after", decision.memory_after_json);
-      detail.append(memory);
+      jsonBlock(technical, "Exact observation", decision.observation_json);
+      jsonBlock(technical, "Exact accepted selection", decision.decision_json);
+      jsonBlock(technical, "Memory before", decision.memory_before_json);
+      jsonBlock(technical, "Memory after", decision.memory_after_json);
       if (decision.choices_json)
         disclosure(
-          detail,
+          technical,
           "Product-authorized choices offered",
           decision.choices_json,
         );
       jsonBlock(
-        detail,
+        technical,
         "Resolved action / memory / next wake",
         decision.resolution_json,
       );
-      jsonBlock(detail, "Translated product delivery", decision.delivery_json);
-      disclosure(detail, "Exact policy request", decision.request_json);
+      jsonBlock(
+        technical,
+        "Translated product delivery",
+        decision.delivery_json,
+      );
+      disclosure(technical, "Exact policy request", decision.request_json);
+      detail.append(technical);
       if (decision.event_i !== null)
         detail.append(
           button(

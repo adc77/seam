@@ -31,6 +31,21 @@ Home, and End move between tabs. Profile, authority, memory, exact aggregates, a
 provenance remain accessible without displacing the primary decision and run views.
 The same compact console layout adapts to narrow screens without external assets.
 
+Dark mode is the default. **Simulation results** leads with scenario outcomes rather
+than engine checks: declared preferred outcomes read as goals met, completed dispositions
+as final outcomes reached, and unfinished actors as personas still waiting. Scenario
+cards show exact formatted averages in the product's declared units; missing outcomes
+remain unavailable, not zero. The advanced report retains the original metric names,
+units, paired statistics, provider usage, source hashes, and original seed IDs.
+
+The start-here help explains scenarios and matched input repeats. **Explore a run** shows
+persona names/goals when recorded, a choice's original product-provided description, and
+readable observation fields. It does not invent motives, goals, or human realism. Exact
+observation/action/memory/policy JSON is collapsed under technical details. Wide numbers
+outside JavaScript's safe-integer range are not reformatted from lossy parsed values;
+their exact original JSON remains available. Scripted/fake providers still say they are
+not LLMs, and this viewer cannot launch jobs or make provider calls.
+
 - Experiment selection, declared variants/parameters, paired seeds, baseline, and pinned source/interpreter/environment identity.
 - Successful/failed run counts, declared metric units, exact rational means, per-seed differences, and excluded pairs. Partial comparisons remain labeled incomplete; failed runs never become zero-valued outcomes.
 - Individual personas: policy mode, profile assumptions, allowed actions, initial/current private memory, arrivals, pending wakeups, and recorded decision requests.
